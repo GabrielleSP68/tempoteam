@@ -1,4 +1,3 @@
-// ... existing code ...
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Clock,
@@ -9,26 +8,19 @@ import {
   ChevronLeft,
   ChevronRight,
   Plus,
-  Settings,
   ShieldCheck,
-  UserCheck,
   Briefcase,
   Coffee,
   TrendingUp,
   TrendingDown,
   FileText,
-  EyeOff,
   Home,
   Building2,
   SunMedium,
   Award,
-  Filter,
   Sparkles,
   MapPin,
-  LogOut,
   Mail,
-  Loader2,
-  RefreshCw,
   UserPlus,
   Users,
 } from 'lucide-react';
@@ -99,12 +91,160 @@ const INITIAL_USERS = [
   },
 ];
 
-// --- UTILITAIRES JOURS FÉRIÉS FRANÇAIS ---
-// ... existing code ...
-// --- COMPOSANT PRINCIPAL ---
+// --- MÉTADONNÉES DES STATUTS DE JOURNÉE ---
+const DAY_STATUSES = {
+  WORKED: {
+    label: 'Travaillé (Présentiel)',
+    countsAsTheoretical: false,
+    badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  },
+  REMOTE: {
+    label: 'Télétravail',
+    countsAsTheoretical: false,
+    badgeClass: 'bg-sky-50 text-sky-700 border-sky-200',
+  },
+  HALF_DAY: {
+    label: 'Demi-journée',
+    countsAsTheoretical: false,
+    badgeClass: 'bg-teal-50 text-teal-700 border-teal-200',
+  },
+  CP: {
+    label: 'Congés Payés',
+    countsAsTheoretical: true,
+    badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
+  },
+  RTT: {
+    label: 'RTT',
+    countsAsTheoretical: true,
+    badgeClass: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+  },
+  SICK: {
+    label: 'Arrêt maladie',
+    countsAsTheoretical: true,
+    badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+  },
+  HOLIDAY: {
+    label: 'Jour férié',
+    countsAsTheoretical: true,
+    badgeClass: 'bg-purple-50 text-purple-800 border-purple-200',
+  },
+  OFF: {
+    label: 'Repos / Non travaillé',
+    countsAsTheoretical: false,
+    badgeClass: 'bg-slate-100 text-slate-600 border-slate-200',
+  },
+};
 
+// --- UTILITAIRES DE DATES & CALCULS ---
+function formatDateISO(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseDateISO(isoStr) {
+  const [y, m, d] = String(isoStr).split('-').map(Number);
+  return new Date(y || 2026, (m || 1) - 1, d || 1);
+}
+
+function addDays(date, days) {
+  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function getMondayOfWeek(date) {
+  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = copy.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  copy.setDate(copy.getDate() + diff);
+  return copy;
+}
+
+function parseTimeToMinutes(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string' || !timeStr.includes(':')) return null;
+  const [h, m] = timeStr.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function calculateDayWorkedMinutes(entry) {
+  if (!entry) return 0;
+  let total = 0;
+  const mStart = parseTimeToMinutes(entry.morningStart);
+  const mEnd = parseTimeToMinutes(entry.morningEnd);
+  if (mStart !== null && mEnd !== null && mEnd > mStart) {
+    total += mEnd - mStart;
+  }
+  const aStart = parseTimeToMinutes(entry.afternoonStart);
+  const aEnd = parseTimeToMinutes(entry.afternoonEnd);
+  if (aStart !== null && aEnd !== null && aEnd > aStart) {
+    total += aEnd - aStart;
+  }
+  return total;
+}
+
+function formatMinutesToHM(totalMinutes, withSign = false) {
+  const sign = totalMinutes < 0 ? '-' : withSign && totalMinutes > 0 ? '+' : '';
+  const absMins = Math.abs(Math.round(totalMinutes || 0));
+  const hours = Math.floor(absMins / 60);
+  const mins = absMins % 60;
+  return `${sign}${hours}h${String(mins).padStart(2, '0')}`;
+}
+
+// Calcul de Pâques (algorithme de Butcher / grégorien)
+function getEasterSundayDate(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+function getFrenchPublicHolidaysForYear(year, includeAlsaceMoselle = false) {
+  const map = {};
+  const addHoliday = (dateObj, label) => {
+    map[formatDateISO(dateObj)] = label;
+  };
+
+  // Jours fériés fixes nationaux
+  addHoliday(new Date(year, 0, 1), 'Jour de l’an');
+  addHoliday(new Date(year, 4, 1), 'Fête du Travail');
+  addHoliday(new Date(year, 4, 8), 'Victoire 1945');
+  addHoliday(new Date(year, 6, 14), 'Fête nationale');
+  addHoliday(new Date(year, 7, 15), 'Assomption');
+  addHoliday(new Date(year, 10, 1), 'Toussaint');
+  addHoliday(new Date(year, 10, 11), 'Armistice 1918');
+  addHoliday(new Date(year, 11, 25), 'Noël');
+
+  // Jours fériés mobiles liés à Pâques
+  const easterSunday = getEasterSundayDate(year);
+  addHoliday(addDays(easterSunday, 1), 'Lundi de Pâques');
+  addHoliday(addDays(easterSunday, 39), 'Ascension');
+  addHoliday(addDays(easterSunday, 50), 'Lundi de Pentecôte');
+
+  // Régime local Alsace-Moselle
+  if (includeAlsaceMoselle) {
+    addHoliday(addDays(easterSunday, -2), 'Vendredi Saint (Alsace-Moselle)');
+    addHoliday(new Date(year, 11, 26), 'Saint-Étienne (Alsace-Moselle)');
+  }
+
+  return map;
+}
+
+// --- COMPOSANT PRINCIPAL ---
 export default function App() {
-  // Chargement sécurisé depuis localStorage (sans aucune dépendance Supabase)
   const [users, setUsers] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.USERS);
@@ -157,7 +297,6 @@ export default function App() {
   // Formulaire de création / connexion rapide par adresse email
   const [quickEmail, setQuickEmail] = useState('');
   const [quickName, setQuickName] = useState('');
-  const [quickJobTitle, setQuickJobTitle] = useState('');
   const [quickRole, setQuickRole] = useState('collaborator');
   const [quickContractType, setQuickContractType] = useState('HOURLY');
   const [quickWeeklyHours, setQuickWeeklyHours] = useState(35);
@@ -243,7 +382,6 @@ export default function App() {
     }
   }, [isAlsaceMoselle]);
 
-  // Utilisateur actif & droits Manager / RH
   const activeUser = useMemo(() => {
     if (!currentUserId) return null;
     return users.find((u) => u.id === currentUserId) || null;
@@ -268,7 +406,6 @@ export default function App() {
 
   const isForfaitJours = inspectedUser?.contractType === 'FORFAIT_JOURS';
 
-  // --- CRÉATION OU CONNEXION PAR ADRESSE EMAIL ---
   const buildInitials = (label) => {
     const clean = (label || '').trim();
     if (!clean) return 'US';
@@ -294,7 +431,6 @@ export default function App() {
       setSelectedTimesheetUserId(existing.id);
       setQuickEmail('');
       setQuickName('');
-      setQuickJobTitle('');
       showToast(`Bienvenue ${existing.name} (${existing.email}).`);
       return;
     }
@@ -317,12 +453,11 @@ export default function App() {
       role: quickRole,
       contractType: quickContractType,
       jobTitle:
-        quickJobTitle.trim() ||
-        (quickRole === 'manager'
+        quickRole === 'manager'
           ? 'Manager'
           : quickRole === 'hr'
           ? 'Ressources Humaines'
-          : 'Collaborateur'),
+          : 'Collaborateur',
       avatar: buildInitials(derivedName),
       color: AVATAR_COLORS[users.length % AVATAR_COLORS.length],
       weeklyHours: parsedHours,
@@ -337,7 +472,6 @@ export default function App() {
     setSelectedTimesheetUserId(newProfile.id);
     setQuickEmail('');
     setQuickName('');
-    setQuickJobTitle('');
     showToast(`Profil créé pour ${newProfile.name} (${newProfile.email}).`);
   };
 
@@ -391,18 +525,17 @@ export default function App() {
     setCurrentUserId(null);
   };
 
-  // Cache multi-années des jours fériés français calculés dynamiquement
-  const holidaysCacheRef = useMemo(() => ({}), [isAlsaceMoselle]);
-
-  const getHolidayName = (isoDate) => {
-    if (!isoDate) return null;
-    const year = Number(isoDate.slice(0, 4));
-    if (isNaN(year)) return null;
-    if (!holidaysCacheRef[year]) {
-      holidaysCacheRef[year] = getFrenchPublicHolidaysForYear(year, isAlsaceMoselle);
-    }
-    return holidaysCacheRef[year][isoDate] || null;
-  };
+  // Jours fériés français selon l'année et l'option Alsace-Moselle
+  const getHolidayName = useCallback(
+    (isoDate) => {
+      if (!isoDate) return null;
+      const year = Number(isoDate.slice(0, 4));
+      if (isNaN(year)) return null;
+      const holidaysMap = getFrenchPublicHolidaysForYear(year, isAlsaceMoselle);
+      return holidaysMap[isoDate] || null;
+    },
+    [isAlsaceMoselle]
+  );
 
   const currentYearHolidaysList = useMemo(() => {
     const year = currentWeekStart.getFullYear();
@@ -422,9 +555,269 @@ export default function App() {
     setCurrentWeekStart(getMondayOfWeek(firstOfMonth));
   };
 
-  // --- LOGIQUE DE CALCUL DES HEURES & FORFAIT JOURS ---
-// ... existing code ...
-  // --- ENREGISTREMENT POINTAGE LOCAL ---
+  const weekDays = useMemo(() => {
+    const count = includeWeekend ? 7 : 5;
+    return Array.from({ length: count }, (_, idx) => {
+      const date = addDays(currentWeekStart, idx);
+      const iso = formatDateISO(date);
+      const holidayName = getHolidayName(iso);
+      return {
+        date,
+        iso,
+        dayName: date.toLocaleDateString('fr-FR', { weekday: 'long' }),
+        shortDate: date.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }),
+        isWeekend: idx >= 5,
+        holidayName,
+        isHoliday: Boolean(holidayName),
+      };
+    });
+  }, [currentWeekStart, includeWeekend, getHolidayName]);
+
+  const getDayEntry = useCallback(
+    (userId, dateIso) => {
+      const key = `${userId}_${dateIso}`;
+      const holidayName = getHolidayName(dateIso);
+      if (timeLogs[key]) {
+        if (
+          holidayName &&
+          timeLogs[key].status === 'WORKED' &&
+          !timeLogs[key].morningStart &&
+          !timeLogs[key].afternoonStart
+        ) {
+          return {
+            status: 'HOLIDAY',
+            isRemote: false,
+            morningStart: '',
+            morningEnd: '',
+            afternoonStart: '',
+            afternoonEnd: '',
+          };
+        }
+        return timeLogs[key];
+      }
+      if (holidayName) {
+        return {
+          status: 'HOLIDAY',
+          isRemote: false,
+          morningStart: '',
+          morningEnd: '',
+          afternoonStart: '',
+          afternoonEnd: '',
+        };
+      }
+      return {
+        status: 'WORKED',
+        isRemote: false,
+        morningStart: '',
+        morningEnd: '',
+        afternoonStart: '',
+        afternoonEnd: '',
+      };
+    },
+    [timeLogs, getHolidayName]
+  );
+
+  // Statistiques de la semaine
+  const currentWeekStats = useMemo(() => {
+    if (!inspectedUser) {
+      return {
+        workedMinutes: 0,
+        assimilatedMinutes: 0,
+        totalAccountedMinutes: 0,
+        targetMinutes: 0,
+        deltaMinutes: 0,
+        workedDaysCount: 0,
+        remoteDaysCount: 0,
+        cpDaysCount: 0,
+        rttDaysCount: 0,
+      };
+    }
+
+    let workedMinutes = 0;
+    let assimilatedMinutes = 0;
+    let workedDaysCount = 0;
+    let remoteDaysCount = 0;
+    let cpDaysCount = 0;
+    let rttDaysCount = 0;
+
+    const dailyTheoreticalMinutes = Math.round(inspectedUser.dailyHours * 60);
+
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(currentWeekStart, i);
+      const iso = formatDateISO(d);
+      const isWeekend = i >= 5;
+      const entry = getDayEntry(inspectedUser.id, iso);
+      const statusMeta = DAY_STATUSES[entry.status] || DAY_STATUSES.WORKED;
+
+      if (inspectedUser.contractType === 'FORFAIT_JOURS') {
+        if (!isWeekend) {
+          if (entry.status === 'WORKED') {
+            workedDaysCount += 1;
+            if (entry.isRemote) remoteDaysCount += 1;
+          } else if (entry.status === 'REMOTE') {
+            workedDaysCount += 1;
+            remoteDaysCount += 1;
+          } else if (entry.status === 'HALF_DAY') {
+            workedDaysCount += 0.5;
+            if (entry.isRemote) remoteDaysCount += 0.5;
+          } else if (entry.status === 'CP') {
+            cpDaysCount += 1;
+          } else if (entry.status === 'RTT') {
+            rttDaysCount += 1;
+          }
+        }
+      } else {
+        if (entry.status === 'WORKED' || entry.status === 'REMOTE') {
+          const mins = calculateDayWorkedMinutes(entry);
+          workedMinutes += mins;
+          if (!isWeekend && mins > 0) {
+            workedDaysCount += 1;
+            if (entry.isRemote || entry.status === 'REMOTE') remoteDaysCount += 1;
+          }
+        } else if (entry.status === 'HALF_DAY') {
+          const mins = calculateDayWorkedMinutes(entry);
+          workedMinutes += mins > 0 ? mins : Math.round(dailyTheoreticalMinutes / 2);
+          if (!isWeekend) {
+            workedDaysCount += 0.5;
+            if (entry.isRemote) remoteDaysCount += 0.5;
+          }
+        } else if (statusMeta.countsAsTheoretical && !isWeekend) {
+          assimilatedMinutes += dailyTheoreticalMinutes;
+        }
+      }
+    }
+
+    const totalAccountedMinutes = workedMinutes + assimilatedMinutes;
+    const targetMinutes = Math.round(inspectedUser.weeklyHours * 60);
+    const deltaMinutes = totalAccountedMinutes - targetMinutes;
+
+    return {
+      workedMinutes,
+      assimilatedMinutes,
+      totalAccountedMinutes,
+      targetMinutes,
+      deltaMinutes,
+      workedDaysCount,
+      remoteDaysCount,
+      cpDaysCount,
+      rttDaysCount,
+    };
+  }, [inspectedUser, currentWeekStart, getDayEntry]);
+
+  // Compteur cumulé global
+  const globalStats = useMemo(() => {
+    if (!inspectedUser) {
+      return {
+        cumulativeMinutes: 0,
+        totalWorkedDays: 0,
+        totalRemoteDays: 0,
+        totalRttTaken: 0,
+        remainingRtt: 0,
+        totalCpTaken: 0,
+        remainingCp: 0,
+      };
+    }
+
+    if (inspectedUser.contractType === 'FORFAIT_JOURS') {
+      let totalWorkedDays = 0;
+      let totalRemoteDays = 0;
+      let totalRttTaken = 0;
+      let totalCpTaken = 0;
+
+      Object.entries(timeLogs).forEach(([key, entry]) => {
+        if (!key.startsWith(`${inspectedUser.id}_`)) return;
+        const dateStr = key.split('_')[1];
+        const d = parseDateISO(dateStr);
+        const dow = d.getDay();
+        if (dow === 0 || dow === 6) return;
+
+        if (entry.status === 'WORKED') {
+          totalWorkedDays += 1;
+          if (entry.isRemote) totalRemoteDays += 1;
+        } else if (entry.status === 'REMOTE') {
+          totalWorkedDays += 1;
+          totalRemoteDays += 1;
+        } else if (entry.status === 'HALF_DAY') {
+          totalWorkedDays += 0.5;
+          if (entry.isRemote) totalRemoteDays += 0.5;
+        } else if (entry.status === 'RTT') {
+          totalRttTaken += 1;
+        } else if (entry.status === 'CP') {
+          totalCpTaken += 1;
+        }
+      });
+
+      return {
+        cumulativeMinutes: 0,
+        totalWorkedDays,
+        totalRemoteDays,
+        totalRttTaken,
+        remainingRtt: Math.max(0, (inspectedUser.annualRttQuota || 0) - totalRttTaken),
+        totalCpTaken,
+        remainingCp: Math.max(0, (inspectedUser.annualCpQuota || 25) - totalCpTaken),
+      };
+    }
+
+    const weeksMap = new Map();
+    weeksMap.set(formatDateISO(currentWeekStart), currentWeekStart);
+
+    Object.keys(timeLogs).forEach((key) => {
+      if (key.startsWith(`${inspectedUser.id}_`)) {
+        const dateStr = key.split('_')[1];
+        const d = parseDateISO(dateStr);
+        const mon = getMondayOfWeek(d);
+        weeksMap.set(formatDateISO(mon), mon);
+      }
+    });
+
+    let cumulativeDelta = 0;
+    const dailyTheoreticalMinutes = Math.round(inspectedUser.dailyHours * 60);
+    const targetMinutes = Math.round(inspectedUser.weeklyHours * 60);
+
+    weeksMap.forEach((mondayDate) => {
+      let wWorked = 0;
+      let wAssim = 0;
+      let hasAnyData = false;
+
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(mondayDate, i);
+        const iso = formatDateISO(d);
+        const isWeekend = i >= 5;
+        const explicitLog = timeLogs[`${inspectedUser.id}_${iso}`];
+        const isHoliday = Boolean(getHolidayName(iso));
+
+        if (explicitLog || isHoliday) {
+          hasAnyData = true;
+        }
+
+        const entry = getDayEntry(inspectedUser.id, iso);
+        const statusMeta = DAY_STATUSES[entry.status] || DAY_STATUSES.WORKED;
+
+        if (entry.status === 'WORKED' || entry.status === 'REMOTE') {
+          wWorked += calculateDayWorkedMinutes(entry);
+        } else if (entry.status === 'HALF_DAY') {
+          const mins = calculateDayWorkedMinutes(entry);
+          wWorked += mins > 0 ? mins : Math.round(dailyTheoreticalMinutes / 2);
+        } else if (statusMeta.countsAsTheoretical && !isWeekend) {
+          wAssim += dailyTheoreticalMinutes;
+        }
+      }
+
+      if (hasAnyData) {
+        cumulativeDelta += wWorked + wAssim - targetMinutes;
+      }
+    });
+
+    return {
+      cumulativeMinutes: inspectedUser.initialBalanceMinutes + cumulativeDelta,
+      totalWorkedDays: 0,
+      totalRemoteDays: 0,
+      totalRttTaken: 0,
+      remainingRtt: 0,
+      totalCpTaken: 0,
+      remainingCp: 0,
+    };
+  }, [inspectedUser, timeLogs, currentWeekStart, getDayEntry, getHolidayName]);
 
   const handleUpdateTimeLog = (dateIso, field, value) => {
     if (!inspectedUser) return;
@@ -491,8 +884,6 @@ export default function App() {
     setTimeLogs((prev) => ({ ...prev, [key]: updated }));
     showToast('Horaires standards appliqués sur la journée.');
   };
-
-  // --- HANDLERS DEMANDES DE CONGÉS & TÉLÉTRAVAIL ---
 
   const [newLeave, setNewLeave] = useState({
     startDate: formatDateISO(new Date()),
@@ -579,8 +970,6 @@ export default function App() {
     }
   };
 
-  // --- HANDLERS PARAMÉTRAGE CONTRATS & STATUTS (MANAGER & RH) ---
-
   const handleToggleAlsaceMoselle = (checked) => {
     setIsAlsaceMoselle(checked);
     showToast(
@@ -640,9 +1029,36 @@ export default function App() {
     );
   };
 
-  // --- DONNÉES DU CALENDRIER MENSUEL D'ÉQUIPE ---
-// ... existing code ...
-  // --- ÉCRAN DE SÉLECTION / CRÉATION DE PROFIL PAR EMAIL ---
+  const monthDays = useMemo(() => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+    return Array.from({ length: daysInMonth }, (_, i) => {
+      const date = new Date(year, month, i + 1);
+      const iso = formatDateISO(date);
+      const dow = date.getDay();
+      return {
+        date,
+        iso,
+        dayNumber: i + 1,
+        dayInitial: date.toLocaleDateString('fr-FR', { weekday: 'narrow' }).toUpperCase(),
+        isWeekend: dow === 0 || dow === 6,
+        holidayName: getHolidayName(iso),
+      };
+    });
+  }, [calendarMonth, getHolidayName]);
+
+  const filteredCalendarUsers = useMemo(() => {
+    if (calendarUserFilter === 'ALL') return users;
+    return users.filter((u) => u.id === calendarUserFilter);
+  }, [users, calendarUserFilter]);
+
+  const pendingRequestsCount = useMemo(
+    () => leaveRequests.filter((r) => r.status === 'PENDING').length,
+    [leaveRequests]
+  );
+
   if (!activeUser) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
@@ -653,11 +1069,10 @@ export default function App() {
             </div>
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">TempoTeam</h1>
             <p className="text-xs text-slate-500">
-              Créez votre profil avec votre adresse email ou sélectionnez un compte existant, sans configuration externe.
+              Créez votre profil avec votre adresse email ou sélectionnez un compte existant.
             </p>
           </div>
 
-          {/* Profils existants pour accès rapide */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-600">Comptes disponibles :</div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -686,7 +1101,10 @@ export default function App() {
             </div>
           </div>
 
-          <form onSubmit={handleCreateOrSwitchByEmail} className="space-y-3.5 pt-2 border-t border-slate-100">
+          <form
+            onSubmit={handleCreateOrSwitchByEmail}
+            className="space-y-3.5 pt-2 border-t border-slate-100"
+          >
             <div className="text-xs font-bold text-slate-800">
               Créer un profil ou ouvrir avec une adresse email
             </div>
@@ -786,11 +1204,8 @@ export default function App() {
     );
   }
 
-  // --- RENDU APPLICATION ---
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
-      {/* Notification Toast */}
       {notification && (
         <div className="fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg border bg-white border-slate-200">
           {notification.type === 'error' ? (
@@ -802,11 +1217,9 @@ export default function App() {
         </div>
       )}
 
-      {/* BARRE DE NAVIGATION SUPÉRIEURE */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between py-3 gap-3">
-            {/* Logo & Titre */}
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-xs">
                 <Clock className="w-5 h-5 text-emerald-400" />
@@ -815,16 +1228,16 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-bold tracking-tight text-slate-900">TempoTeam</h1>
                   <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    Mode Local • Sans Supabase
+                    Mode Local
                   </span>
                 </div>
-                <p className="text-xs text-slate-500">Gestion des temps, compteurs et planning d’équipe</p>
+                <p className="text-xs text-slate-500">
+                  Gestion des temps, compteurs et planning d’équipe
+                </p>
               </div>
             </div>
 
-            {/* Sélecteur rapide Mois / Année + Profil actif & Changement */}
             <div className="flex flex-wrap items-center gap-2.5">
-              {/* Sélecteur rapide Mois/Année */}
               <div className="flex items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80">
                 <CalendarIcon className="w-3.5 h-3.5 text-slate-500 ml-1.5" />
                 <select
@@ -873,7 +1286,6 @@ export default function App() {
                 </select>
               </div>
 
-              {/* Sélecteur rapide de profil actif */}
               <select
                 aria-label="Profil actif"
                 value={activeUser.id}
@@ -896,6 +1308,7 @@ export default function App() {
               </select>
 
               <button
+                type="button"
                 onClick={handleLogout}
                 title="Créer ou changer de profil par email"
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
@@ -906,9 +1319,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* Onglets de navigation */}
           <nav className="flex items-center gap-1 -mb-px overflow-x-auto">
             <button
+              type="button"
               onClick={() => setActiveTab('timesheet')}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                 activeTab === 'timesheet'
@@ -921,6 +1334,7 @@ export default function App() {
             </button>
 
             <button
+              type="button"
               onClick={() => setActiveTab('calendar')}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                 activeTab === 'calendar'
@@ -933,6 +1347,7 @@ export default function App() {
             </button>
 
             <button
+              type="button"
               onClick={() => setActiveTab('requests')}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                 activeTab === 'requests'
@@ -951,6 +1366,7 @@ export default function App() {
 
             {canManageTeam && (
               <button
+                type="button"
                 onClick={() => setActiveTab('team_settings')}
                 className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                   activeTab === 'team_settings'
@@ -966,15 +1382,14 @@ export default function App() {
         </div>
       </header>
 
-      {/* CONTENU PRINCIPAL */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Bandeau sélection collaborateur pour Manager et RH */}
         {canManageTeam && activeTab === 'timesheet' && (
           <div className="bg-indigo-50/80 border border-indigo-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-sm text-indigo-950">
               <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
               <span>
-                Mode <strong>{isManager ? 'Manager' : 'RH'}</strong> actif : sélectionnez un collaborateur pour consulter ou saisir sa feuille de temps.
+                Mode <strong>{isManager ? 'Manager' : 'RH'}</strong> actif : sélectionnez un
+                collaborateur pour consulter ou saisir sa feuille de temps.
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1000,12 +1415,8 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            ONGLET 1 : FEUILLE DE TEMPS HEBDOMADAIRE
-           ===================================================================== */}
         {activeTab === 'timesheet' && inspectedUser && (
           <div className="space-y-6">
-            {/* Cartes de synthèse : adaptées au contrat (Forfait Jours vs Taux Horaire) */}
             {isForfaitJours ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
@@ -1079,7 +1490,8 @@ export default function App() {
                     <span className="text-sm font-normal text-slate-500">/ semaine</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    Soit {inspectedUser.dailyHours}h/jour (5j) • {currentWeekStats.remoteDaysCount} j TT cette sem.
+                    Soit {inspectedUser.dailyHours}h/jour (5j) • {currentWeekStats.remoteDaysCount} j TT
+                    cette sem.
                   </p>
                 </div>
 
@@ -1145,16 +1557,17 @@ export default function App() {
                     {formatMinutesToHM(globalStats.cumulativeMinutes, true)}
                   </div>
                   <p className="text-xs text-slate-600 mt-1">
-                    Solde initial ({formatMinutesToHM(inspectedUser.initialBalanceMinutes, true)}) + toutes semaines
+                    Solde initial ({formatMinutesToHM(inspectedUser.initialBalanceMinutes, true)}) +
+                    toutes semaines
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Barre de navigation de semaine */}
             <div className="bg-white rounded-2xl border border-slate-200/90 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   onClick={() => setCurrentWeekStart((prev) => addDays(prev, -7))}
                   className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600"
                   title="Semaine précédente"
@@ -1162,7 +1575,12 @@ export default function App() {
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 <div className="px-3 py-1.5 rounded-xl bg-slate-100 text-sm font-semibold text-slate-800 min-w-[210px] text-center">
-                  Semaine du {currentWeekStart.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })} au{' '}
+                  Semaine du{' '}
+                  {currentWeekStart.toLocaleDateString('fr-FR', {
+                    day: 'numeric',
+                    month: 'long',
+                  })}{' '}
+                  au{' '}
                   {addDays(currentWeekStart, includeWeekend ? 6 : 4).toLocaleDateString('fr-FR', {
                     day: 'numeric',
                     month: 'long',
@@ -1170,6 +1588,7 @@ export default function App() {
                   })}
                 </div>
                 <button
+                  type="button"
                   onClick={() => setCurrentWeekStart((prev) => addDays(prev, 7))}
                   className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600"
                   title="Semaine suivante"
@@ -1177,6 +1596,7 @@ export default function App() {
                   <ChevronRight className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => setCurrentWeekStart(getMondayOfWeek(new Date()))}
                   className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
                 >
@@ -1195,14 +1615,12 @@ export default function App() {
               </label>
             </div>
 
-            {/* ===============================================================
-                 VUE CADRE AU FORFAIT JOURS : DÉCLARATION À LA JOURNÉE EN 1 CLIC
-                 =============================================================== */}
             {isForfaitJours ? (
               <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
                 <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 bg-slate-50/50">
                   <div className="text-xs font-semibold text-slate-600">
-                    Déclaration journalière du forfait jours (Présentiel, Télétravail, Congés, RTT, Maladie)
+                    Déclaration journalière du forfait jours (Présentiel, Télétravail, Congés, RTT,
+                    Maladie)
                   </div>
                   <div className="flex items-center gap-2 text-xs text-slate-500">
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
@@ -1232,7 +1650,6 @@ export default function App() {
                             : 'hover:bg-slate-50/50'
                         }`}
                       >
-                        {/* Date & Jour férié */}
                         <div className="min-w-[190px]">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold text-sm capitalize text-slate-900">
@@ -1262,7 +1679,6 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Sélecteurs rapides à la journée */}
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
@@ -1319,9 +1735,6 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              /* ===============================================================
-                 VUE COLLABORATEUR TAUX HORAIRE : SAISIE DES 4 POINTAGES
-                 =============================================================== */
               <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
@@ -1390,7 +1803,11 @@ export default function App() {
                                   className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${statusMeta.badgeClass}`}
                                 >
                                   {Object.entries(DAY_STATUSES).map(([key, cfg]) => (
-                                    <option key={key} value={key} className="bg-white text-slate-800">
+                                    <option
+                                      key={key}
+                                      value={key}
+                                      className="bg-white text-slate-800"
+                                    >
                                       {cfg.label}
                                     </option>
                                   ))}
@@ -1456,8 +1873,9 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Coffee className="w-4 h-4 text-slate-400 shrink-0" />
                     <span>
-                      Les congés payés, RTT, jours fériés et arrêts maladie créditent automatiquement{' '}
-                      <strong>{inspectedUser.dailyHours}h</strong> afin de ne pas pénaliser le compteur.
+                      Les congés payés, RTT, jours fériés et arrêts maladie créditent
+                      automatiquement <strong>{inspectedUser.dailyHours}h</strong> afin de ne pas
+                      pénaliser le compteur.
                     </span>
                   </div>
                   <div className="font-semibold text-slate-700">
@@ -1476,9 +1894,6 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            ONGLET 2 : CALENDRIER MENSUEL PARTAGÉ D'ÉQUIPE
-           ===================================================================== */}
         {activeTab === 'calendar' && (
           <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-6 space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -1494,6 +1909,7 @@ export default function App() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <button
+                  type="button"
                   onClick={() =>
                     setCalendarMonth(
                       (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
@@ -1504,6 +1920,7 @@ export default function App() {
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     const now = new Date();
                     setCalendarMonth(new Date(now.getFullYear(), now.getMonth(), 1));
@@ -1513,6 +1930,7 @@ export default function App() {
                   Mois actuel
                 </button>
                 <button
+                  type="button"
                   onClick={() =>
                     setCalendarMonth(
                       (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
@@ -1676,12 +2094,8 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            ONGLET 3 : DEMANDES DE CONGÉS, RTT & TÉLÉTRAVAIL
-           ===================================================================== */}
         {activeTab === 'requests' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Formulaire nouvelle demande */}
             <form
               onSubmit={handleSubmitLeaveRequest}
               className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4 h-fit"
@@ -1756,7 +2170,6 @@ export default function App() {
               </button>
             </form>
 
-            {/* Liste des demandes + validation Manager / RH */}
             <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h2 className="text-base font-bold text-slate-900">
@@ -1827,9 +2240,7 @@ export default function App() {
                               <span className="font-bold text-sm text-slate-900">
                                 {requester?.name || 'Collaborateur'}
                               </span>
-                              <span className="text-xs text-slate-400">
-                                ({requester?.email})
-                              </span>
+                              <span className="text-xs text-slate-400">({requester?.email})</span>
                               <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-700">
                                 {DAY_STATUSES[req.type]?.label || req.type}
                               </span>
@@ -1893,12 +2304,8 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            ONGLET 4 : ÉQUIPE, CONTRATS & STATUTS (MANAGER & RH)
-           ===================================================================== */}
         {activeTab === 'team_settings' && canManageTeam && (
           <div className="space-y-6">
-            {/* Formulaire création d'un nouveau profil collaborateur */}
             <form
               onSubmit={handleAddTeamMember}
               className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4"
@@ -1975,7 +2382,6 @@ export default function App() {
               </div>
             </form>
 
-            {/* Carte Configuration Jours Fériés & Alsace-Moselle */}
             <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -1988,11 +2394,11 @@ export default function App() {
                     </h2>
                   </div>
                   <p className="text-sm text-slate-500">
-                    Calcul automatique des 11 jours fériés nationaux (incluant Lundi de Pâques, Ascension et Lundi de Pentecôte).
+                    Calcul automatique des 11 jours fériés nationaux (incluant Lundi de Pâques,
+                    Ascension et Lundi de Pentecôte).
                   </p>
                 </div>
 
-                {/* Interrupteur Régime Local Alsace-Moselle */}
                 <label className="flex items-center gap-3 p-3.5 rounded-xl border border-purple-200 bg-purple-50/60 cursor-pointer shrink-0 select-none">
                   <input
                     type="checkbox"
@@ -2036,14 +2442,14 @@ export default function App() {
               </div>
             </section>
 
-            {/* Tableau de gestion des contrats et statuts par collaborateur */}
             <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">
                   Gestion des équipes, contrats horaires et forfait jours
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Définissez pour chaque collaborateur son adresse email, son rôle, son statut Cadre au Forfait Jours ou son taux horaire hebdomadaire (ex. : 35h, 37h, 39h).
+                  Définissez pour chaque collaborateur son adresse email, son rôle, son statut Cadre
+                  au Forfait Jours ou son taux horaire hebdomadaire (ex. : 35h, 37h, 39h).
                 </p>
               </div>
 
