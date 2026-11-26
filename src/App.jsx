@@ -43,54 +43,6 @@ const AVATAR_COLORS = [
   'bg-violet-600',
 ];
 
-const INITIAL_USERS = [
-  {
-    id: 'user-manager-1',
-    email: 'direction@entreprise.fr',
-    name: 'Camille Laurent',
-    role: 'manager',
-    contractType: 'FORFAIT_JOURS',
-    jobTitle: 'Manager / Cadre Dirigeant',
-    avatar: 'CL',
-    color: 'bg-indigo-600',
-    weeklyHours: 0,
-    dailyHours: 0,
-    initialBalanceMinutes: 0,
-    annualRttQuota: 12,
-    annualCpQuota: 25,
-  },
-  {
-    id: 'user-hr-1',
-    email: 'rh@entreprise.fr',
-    name: 'Sophie Mercier',
-    role: 'hr',
-    contractType: 'HOURLY',
-    jobTitle: 'Responsable Ressources Humaines',
-    avatar: 'SM',
-    color: 'bg-emerald-600',
-    weeklyHours: 35,
-    dailyHours: 7,
-    initialBalanceMinutes: 0,
-    annualRttQuota: 0,
-    annualCpQuota: 25,
-  },
-  {
-    id: 'user-collab-1',
-    email: 'lucas.martin@entreprise.fr',
-    name: 'Lucas Martin',
-    role: 'collaborator',
-    contractType: 'HOURLY',
-    jobTitle: 'Chargé de Projet',
-    avatar: 'LM',
-    color: 'bg-sky-600',
-    weeklyHours: 37,
-    dailyHours: 7.4,
-    initialBalanceMinutes: 0,
-    annualRttQuota: 0,
-    annualCpQuota: 25,
-  },
-];
-
 // --- MÉTADONNÉES DES STATUTS DE JOURNÉE ---
 const DAY_STATUSES = {
   WORKED: {
@@ -250,19 +202,19 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_KEYS.USERS);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch (err) {
       console.error('Erreur lecture profils locaux:', err);
     }
-    return INITIAL_USERS;
+    return [];
   });
 
   const [currentUserId, setCurrentUserId] = useState(() => {
     try {
-      return localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID) || 'user-manager-1';
+      return localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID) || null;
     } catch {
-      return 'user-manager-1';
+      return null;
     }
   });
 
@@ -301,7 +253,7 @@ export default function App() {
   const [quickContractType, setQuickContractType] = useState('HOURLY');
   const [quickWeeklyHours, setQuickWeeklyHours] = useState(35);
   const [formError, setFormError] = useState('');
-
+  const [accountActionMode, setAccountActionMode] = useState('CREATE'); // 'CREATE' (uniquement si aucun compte) ou 'OPEN_EXISTING'
   // Formulaire ajout collaborateur dans l'espace Manager / RH
   const [newMember, setNewMember] = useState({
     name: '',
@@ -431,37 +383,41 @@ export default function App() {
       setSelectedTimesheetUserId(existing.id);
       setQuickEmail('');
       setQuickName('');
-      showToast(`Bienvenue ${existing.name} (${existing.email}).`);
+      showToast(`Session ouverte pour ${existing.name}.`);
       return;
     }
 
-    const derivedName =
+    // Si des comptes existent déjà, seul un Manager ou RH peut créer de nouveaux collaborateurs
+    if (users.length > 0 && accountActionMode === 'CREATE') {
+      setFormError(
+        'Des comptes existent déjà : saisissez une adresse existante pour ouvrir votre session, ou demandez au Manager / à la RH de créer votre profil.'
+      );
+      return;
+    }
+
+    const isForfait = quickContractType === 'FORFAIT_JOURS';
+    const parsedHours = isForfait ? 0 : Math.max(1, Number(quickWeeklyHours) || 35);
+    const displayName =
       quickName.trim() ||
       normalizedEmail
         .split('@')[0]
         .replace(/[._-]+/g, ' ')
         .replace(/\b\w/g, (c) => c.toUpperCase());
 
-    const isForfait = quickContractType === 'FORFAIT_JOURS';
-    const parsedHours = isForfait ? 0 : Math.max(1, Number(quickWeeklyHours) || 35);
-    const computedDaily = isForfait ? 0 : Number((parsedHours / 5).toFixed(2));
+    const assignedRole = users.length === 0 ? quickRole : 'collaborator';
 
     const newProfile = {
       id: `user-${Date.now()}`,
       email: normalizedEmail,
-      name: derivedName,
-      role: quickRole,
+      name: displayName,
+      role: assignedRole,
       contractType: quickContractType,
       jobTitle:
-        quickRole === 'manager'
-          ? 'Manager'
-          : quickRole === 'hr'
-          ? 'Ressources Humaines'
-          : 'Collaborateur',
-      avatar: buildInitials(derivedName),
+        assignedRole === 'manager' ? 'Manager' : assignedRole === 'hr' ? 'RH' : 'Collaborateur',
+      avatar: buildInitials(displayName),
       color: AVATAR_COLORS[users.length % AVATAR_COLORS.length],
       weeklyHours: parsedHours,
-      dailyHours: computedDaily,
+      dailyHours: isForfait ? 0 : Number((parsedHours / 5).toFixed(2)),
       initialBalanceMinutes: 0,
       annualRttQuota: isForfait ? 12 : 0,
       annualCpQuota: 25,
@@ -473,6 +429,55 @@ export default function App() {
     setQuickEmail('');
     setQuickName('');
     showToast(`Profil créé pour ${newProfile.name} (${newProfile.email}).`);
+  };
+
+  const handleDeleteUser = (userId) => {
+    // Seul un Manager ou un RH peut supprimer un profil (ou si aucun utilisateur n'est connecté)
+    if (activeUser && !canManageTeam) {
+      showToast('Seuls le Manager et la RH peuvent supprimer un profil.', 'error');
+      return;
+    }
+    if (activeUser && activeUser.id === userId) {
+      showToast('Vous ne pouvez pas supprimer votre propre session active.', 'error');
+      return;
+    }
+
+    const target = users.find((u) => u.id === userId);
+    const remaining = users.filter((u) => u.id !== userId);
+
+    setUsers(remaining);
+    setLeaveRequests((prev) => prev.filter((r) => r.userId !== userId));
+    setTimeLogs((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([key, val]) => {
+        if (!key.startsWith(`${userId}_`)) {
+          next[key] = val;
+        }
+      });
+      return next;
+    });
+
+    if (currentUserId === userId) {
+      setCurrentUserId(null);
+    }
+    if (selectedTimesheetUserId === userId) {
+      setSelectedTimesheetUserId(activeUser?.id || null);
+    }
+
+    showToast(`Profil ${target?.name || ''} supprimé.`);
+  };
+
+  const handleClearAllUsers = () => {
+    if (activeUser && !canManageTeam) {
+      showToast('Action réservée au Manager et à la RH.', 'error');
+      return;
+    }
+    setUsers([]);
+    setTimeLogs({});
+    setLeaveRequests([]);
+    setCurrentUserId(null);
+    setSelectedTimesheetUserId(null);
+    showToast('Tous les profils locaux ont été supprimés.');
   };
 
   const handleAddTeamMember = (e) => {
@@ -1060,6 +1065,7 @@ export default function App() {
   );
 
   if (!activeUser) {
+    const canBootstrapInitialProfile = users.length === 0;
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-lg bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
@@ -1069,45 +1075,45 @@ export default function App() {
             </div>
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">TempoTeam</h1>
             <p className="text-xs text-slate-500">
-              Créez votre profil avec votre adresse email ou sélectionnez un compte existant.
+              {canBootstrapInitialProfile
+                ? 'Créez le premier profil (Manager ou RH) pour démarrer la gestion de l’équipe.'
+                : 'Saisissez votre adresse email enregistrée pour accéder à votre espace.'}
             </p>
           </div>
 
-          <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-600">Comptes disponibles :</div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {users.map((u) => (
+          <form onSubmit={handleCreateOrSwitchByEmail} className="space-y-3.5">
+            {!canBootstrapInitialProfile && (
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-100 text-xs font-semibold">
                 <button
-                  key={u.id}
                   type="button"
                   onClick={() => {
-                    setCurrentUserId(u.id);
-                    setSelectedTimesheetUserId(u.id);
+                    setAccountActionMode('OPEN_EXISTING');
+                    setFormError('');
                   }}
-                  className="p-2.5 rounded-xl border border-slate-200 hover:border-slate-900 hover:bg-slate-50 text-left transition-colors"
+                  className={`py-1.5 rounded-lg transition-colors ${
+                    accountActionMode === 'OPEN_EXISTING'
+                      ? 'bg-white text-slate-900 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
                 >
-                  <div className="text-xs font-bold text-slate-900 truncate">{u.name}</div>
-                  <div className="text-[11px] text-slate-500 truncate">{u.email}</div>
-                  <div className="mt-1 text-[10px] font-semibold text-indigo-700">
-                    {u.role === 'manager'
-                      ? 'Manager'
-                      : u.role === 'hr'
-                      ? 'RH'
-                      : 'Collaborateur'}{' '}
-                    • {u.contractType === 'FORFAIT_JOURS' ? 'Forfait Jours' : `${u.weeklyHours}h`}
-                  </div>
+                  Ouvrir mon compte
                 </button>
-              ))}
-            </div>
-          </div>
-
-          <form
-            onSubmit={handleCreateOrSwitchByEmail}
-            className="space-y-3.5 pt-2 border-t border-slate-100"
-          >
-            <div className="text-xs font-bold text-slate-800">
-              Créer un profil ou ouvrir avec une adresse email
-            </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccountActionMode('CREATE');
+                    setFormError('');
+                  }}
+                  className={`py-1.5 rounded-lg transition-colors ${
+                    accountActionMode === 'CREATE'
+                      ? 'bg-white text-slate-900 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Créer mon profil collaborateur
+                </button>
+              </div>
+            )}
 
             {formError && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
@@ -1116,87 +1122,99 @@ export default function App() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Adresse email *
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Adresse email *
+              </label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="email"
+                  required
+                  value={quickEmail}
+                  onChange={(e) => setQuickEmail(e.target.value)}
+                  placeholder="prenom.nom@entreprise.fr"
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+            </div>
+
+            {(canBootstrapInitialProfile || accountActionMode === 'CREATE') && (
+              <>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nom complet
+                  </label>
                   <input
-                    type="email"
-                    required
-                    value={quickEmail}
-                    onChange={(e) => setQuickEmail(e.target.value)}
-                    placeholder="prenom.nom@entreprise.fr"
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    type="text"
+                    value={quickName}
+                    onChange={(e) => setQuickName(e.target.value)}
+                    placeholder="Prénom Nom"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
                   />
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Nom complet
-                </label>
-                <input
-                  type="text"
-                  value={quickName}
-                  onChange={(e) => setQuickName(e.target.value)}
-                  placeholder="Prénom Nom"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-                />
-              </div>
-            </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {canBootstrapInitialProfile && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Rôle initial
+                      </label>
+                      <select
+                        value={quickRole}
+                        onChange={(e) => setQuickRole(e.target.value)}
+                        className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                      >
+                        <option value="manager">Manager</option>
+                        <option value="hr">RH</option>
+                        <option value="collaborator">Collaborateur</option>
+                      </select>
+                    </div>
+                  )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Rôle</label>
-                <select
-                  value={quickRole}
-                  onChange={(e) => setQuickRole(e.target.value)}
-                  className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
-                >
-                  <option value="collaborator">Collaborateur</option>
-                  <option value="hr">RH</option>
-                  <option value="manager">Manager</option>
-                </select>
-              </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Contrat
+                    </label>
+                    <select
+                      value={quickContractType}
+                      onChange={(e) => setQuickContractType(e.target.value)}
+                      className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                    >
+                      <option value="HOURLY">Taux horaire</option>
+                      <option value="FORFAIT_JOURS">Cadre Forfait Jours</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Contrat</label>
-                <select
-                  value={quickContractType}
-                  onChange={(e) => setQuickContractType(e.target.value)}
-                  className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
-                >
-                  <option value="HOURLY">Taux horaire</option>
-                  <option value="FORFAIT_JOURS">Cadre Forfait Jours</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Base hebdo (h)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="60"
-                  step="0.5"
-                  disabled={quickContractType === 'FORFAIT_JOURS'}
-                  value={quickContractType === 'FORFAIT_JOURS' ? '' : quickWeeklyHours}
-                  onChange={(e) => setQuickWeeklyHours(e.target.value)}
-                  placeholder={quickContractType === 'FORFAIT_JOURS' ? 'Forfait' : '35'}
-                  className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-sm disabled:bg-slate-100"
-                />
-              </div>
-            </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Base hebdo (h)
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="60"
+                      step="0.5"
+                      disabled={quickContractType === 'FORFAIT_JOURS'}
+                      value={quickContractType === 'FORFAIT_JOURS' ? '' : quickWeeklyHours}
+                      onChange={(e) => setQuickWeeklyHours(e.target.value)}
+                      placeholder={quickContractType === 'FORFAIT_JOURS' ? 'Forfait' : '35'}
+                      className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-sm disabled:bg-slate-100"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
 
             <button
               type="submit"
               className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors"
             >
-              Valider et accéder à TempoTeam
+              {canBootstrapInitialProfile
+                ? 'Créer mon profil et démarrer'
+                : accountActionMode === 'CREATE'
+                ? 'Créer mon profil collaborateur'
+                : 'Accéder à mon espace'}
             </button>
           </form>
         </div>
@@ -1300,21 +1318,21 @@ export default function App() {
                     {u.name} ({u.email}) —{' '}
                     {u.role === 'manager'
                       ? 'Manager'
-                      : u.role === 'hr'
-                      ? 'RH'
-                      : 'Collaborateur'}
-                  </option>
-                ))}
-              </select>
+              <div className="px-3 py-1.5 rounded-xl bg-slate-100 text-xs font-bold text-slate-900 border border-slate-200">
+                <span>{activeUser.name}</span>
+                <span className="text-slate-500 font-medium ml-1.5">
+                  ({isManager ? 'Manager' : isHR ? 'RH' : 'Collaborateur'})
+                </span>
+              </div>
 
               <button
                 type="button"
                 onClick={handleLogout}
-                title="Créer ou changer de profil par email"
+                title="Fermer ma session"
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
               >
                 <UserPlus className="w-4 h-4" />
-                <span>Profil / Email</span>
+                <span>Changer de session</span>
               </button>
             </div>
           </div>
@@ -1383,6 +1401,49 @@ export default function App() {
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span
+              className={`w-10 h-10 rounded-full ${activeUser.color} text-white text-xs font-bold flex items-center justify-center shrink-0`}
+            >
+              {activeUser.avatar}
+            </span>
+            <div>
+              <div className="text-xs font-bold text-slate-900">Mon profil</div>
+              <div className="text-[11px] text-slate-500">
+                Modifiez directement vos informations personnelles (sauvegarde automatique)
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 flex-1 max-w-3xl">
+            <input
+              type="text"
+              aria-label="Mon nom complet"
+              value={activeUser.name}
+              onChange={(e) => handleUpdateOwnProfile('name', e.target.value)}
+              placeholder="Nom complet"
+              className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+            <input
+              type="email"
+              aria-label="Mon adresse email"
+              value={activeUser.email}
+              onChange={(e) => handleUpdateOwnProfile('email', e.target.value)}
+              placeholder="email@entreprise.fr"
+              className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+            <input
+              type="text"
+              aria-label="Mon intitulé de poste"
+              value={activeUser.jobTitle || ''}
+              onChange={(e) => handleUpdateOwnProfile('jobTitle', e.target.value)}
+              placeholder="Intitulé du poste"
+              className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+          </div>
+        </div>
+
         {canManageTeam && activeTab === 'timesheet' && (
           <div className="bg-indigo-50/80 border border-indigo-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-sm text-indigo-950">
@@ -2464,11 +2525,13 @@ export default function App() {
                       <th className="py-3 px-4">Solde initial (min)</th>
                       <th className="py-3 px-4">Quota RTT annuel (j)</th>
                       <th className="py-3 px-4">Quota CP annuel (j)</th>
+                      <th className="py-3 px-4 text-right">Suppression</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-sm">
                     {users.map((u) => {
                       const isUserForfait = u.contractType === 'FORFAIT_JOURS';
+                      const isSelf = u.id === activeUser.id;
                       return (
                         <tr key={u.id} className="hover:bg-slate-50/70">
                           <td className="py-3.5 px-4">
@@ -2614,6 +2677,20 @@ export default function App() {
                               }
                               className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
                             />
+                          </td>
+
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                            {isSelf ? (
+                              <span className="text-xs text-slate-400 italic">Session active</span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteUser(u.id)}
+                                className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50/70 hover:bg-rose-100 text-xs font-semibold text-rose-700 transition-colors"
+                              >
+                                Supprimer
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
