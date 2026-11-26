@@ -28,6 +28,7 @@ import {
 // --- CLÉS DE STOCKAGE LOCAL (SANS SUPABASE) ---
 const STORAGE_KEYS = {
   USERS: 'tempoteam_local_users_v1',
+  DEPARTMENTS: 'tempoteam_local_departments_v1',
   ACTIVE_USER_ID: 'tempoteam_local_active_user_v1',
   TIME_LOGS: 'tempoteam_local_time_logs_v1',
   LEAVE_REQUESTS: 'tempoteam_local_leave_requests_v1',
@@ -197,6 +198,19 @@ function getFrenchPublicHolidaysForYear(year, includeAlsaceMoselle = false) {
 
 // --- COMPOSANT PRINCIPAL ---
 export default function App() {
+  const [departments, setDepartments] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.DEPARTMENTS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (err) {
+      console.error('Erreur lecture services locaux:', err);
+    }
+    return [];
+  });
+
   const [users, setUsers] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.USERS);
@@ -260,6 +274,7 @@ export default function App() {
     email: '',
     jobTitle: 'Collaborateur',
     role: 'collaborator',
+    departmentId: '',
     contractType: 'HOURLY',
     weeklyHours: 35,
     annualRttQuota: 12,
@@ -269,10 +284,17 @@ export default function App() {
     isActive: true,
   });
 
+  // Formulaire création d'un service avec manager rattaché (RH / Manager)
+  const [newDepartment, setNewDepartment] = useState({
+    name: '',
+    managerId: '',
+  });
+
   // Profil consulté par le manager ou la RH
   const [selectedTimesheetUserId, setSelectedTimesheetUserId] = useState(null);
   const [requestStatusFilter, setRequestStatusFilter] = useState('ALL');
   const [showInactiveMembers, setShowInactiveMembers] = useState(true);
+  const [departmentFilter, setDepartmentFilter] = useState('ALL');
   const [includeWeekend, setIncludeWeekend] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -290,6 +312,14 @@ export default function App() {
   }, []);
 
   // Persistance automatique dans localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.DEPARTMENTS, JSON.stringify(departments));
+    } catch (err) {
+      console.error('Erreur sauvegarde services:', err);
+    }
+  }, [departments]);
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
@@ -344,6 +374,26 @@ export default function App() {
   const isHR = normalizedRole === 'hr' || normalizedRole === 'rh';
   const canManageTeam = isManager || isHR;
 
+  // Périmètre visible : la RH voit tout le monde ; le manager voit son périmètre / équipe
+  const visibleUsers = useMemo(() => {
+    if (!activeUser) return [];
+    if (isHR) return users;
+    if (isManager) {
+      const managedDeptIds = departments
+        .filter((d) => d.managerId === activeUser.id)
+        .map((d) => d.id);
+      const hasManagedDept = managedDeptIds.length > 0;
+      const scoped = users.filter(
+        (u) =>
+          u.id === activeUser.id ||
+          (u.departmentId && managedDeptIds.includes(u.departmentId)) ||
+          (!hasManagedDept && u.role === 'collaborator')
+      );
+      return scoped.length > 0 ? scoped : users;
+    }
+    return users.filter((u) => u.id === activeUser.id);
+  }, [activeUser, isHR, isManager, users, departments]);
+
   useEffect(() => {
     if (activeUser && !selectedTimesheetUserId) {
       setSelectedTimesheetUserId(activeUser.id);
@@ -353,32 +403,12 @@ export default function App() {
   const inspectedUser = useMemo(() => {
     if (!activeUser) return null;
     if (!canManageTeam) return activeUser;
-    return users.find((u) => u.id === selectedTimesheetUserId) || activeUser;
-  }, [canManageTeam, activeUser, users, selectedTimesheetUserId]);
-
-  const isForfaitJours = inspectedUser?.contractType === 'FORFAIT_JOURS';
-
-  const buildInitials = (label) => {
-    const clean = (label || '').trim();
-    if (!clean) return 'US';
-    const parts = clean.split(/\s+/);
-    if (parts.length >= 2) {
-      return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
-    }
-    return clean.slice(0, 2).toUpperCase();
-  };
-
-  const handleCreateOrSwitchByEmail = (e) => {
-    e.preventDefault();
-    setFormError('');
-    const normalizedEmail = quickEmail.trim().toLowerCase();
-    if (!normalizedEmail || !normalizedEmail.includes('@')) {
-      setFormError('Veuillez saisir une adresse email valide.');
-      return;
-    }
-
-    const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
-    if (existing) {
+    return (
+      visibleUsers.find((u) => u.id === selectedTimesheetUserId) ||
+      users.find((u) => u.id === selectedTimesheetUserId) ||
+      activeUser
+    );
+  }, [canManageTeam, activeUser, visibleUsers, users, selectedTimesheetUserId]);
       setCurrentUserId(existing.id);
       setSelectedTimesheetUserId(existing.id);
       setQuickEmail('');
@@ -411,6 +441,7 @@ export default function App() {
       email: normalizedEmail,
       name: displayName,
       role: assignedRole,
+      departmentId: '',
       contractType: quickContractType,
       jobTitle:
         assignedRole === 'manager' ? 'Manager' : assignedRole === 'hr' ? 'RH' : 'Collaborateur',
@@ -424,63 +455,61 @@ export default function App() {
       entryDate: formatDateISO(new Date()),
       exitDate: '',
       isActive: true,
+  const handleCreateDepartment = (e) => {
+    e.preventDefault();
+    if (!canManageTeam) {
+      showToast('Seuls le Manager et la RH peuvent créer un service.', 'error');
+      return;
+    }
+    const cleanName = newDepartment.name.trim();
+    if (!cleanName) {
+      showToast('Veuillez saisir le nom du service.', 'error');
+      return;
+    }
+
+    const defaultManagerId =
+      newDepartment.managerId ||
+      (isManager ? activeUser.id : users.find((u) => u.role === 'manager')?.id || '');
+
+    const createdDept = {
+      id: `dept-${Date.now()}`,
+      name: cleanName,
+      managerId: defaultManagerId,
     };
 
-    setUsers((prev) => [...prev, newProfile]);
-    setCurrentUserId(newProfile.id);
-    setSelectedTimesheetUserId(newProfile.id);
-    setQuickEmail('');
-    setQuickName('');
-    showToast(`Profil créé pour ${newProfile.name} (${newProfile.email}).`);
+    setDepartments((prev) => [...prev, createdDept]);
+
+    // Si un manager est rattaché et n'avait pas encore de service, on lui associe ce service
+    if (defaultManagerId) {
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === defaultManagerId && !u.departmentId
+            ? { ...u, departmentId: createdDept.id }
+            : u
+        )
+      );
+    }
+
+    setNewDepartment({ name: '', managerId: '' });
+    showToast(`Service "${createdDept.name}" créé.`);
   };
 
-  const handleDeleteUser = (userId) => {
-    // Seul un Manager ou un RH peut supprimer un profil (ou si aucun utilisateur n'est connecté)
-    if (activeUser && !canManageTeam) {
-      showToast('Seuls le Manager et la RH peuvent supprimer un profil.', 'error');
-      return;
-    }
-    if (activeUser && activeUser.id === userId) {
-      showToast('Vous ne pouvez pas supprimer votre propre session active.', 'error');
-      return;
-    }
-
-    const target = users.find((u) => u.id === userId);
-    const remaining = users.filter((u) => u.id !== userId);
-
-    setUsers(remaining);
-    setLeaveRequests((prev) => prev.filter((r) => r.userId !== userId));
-    setTimeLogs((prev) => {
-      const next = {};
-      Object.entries(prev).forEach(([key, val]) => {
-        if (!key.startsWith(`${userId}_`)) {
-          next[key] = val;
-        }
-      });
-      return next;
-    });
-
-    if (currentUserId === userId) {
-      setCurrentUserId(null);
-    }
-    if (selectedTimesheetUserId === userId) {
-      setSelectedTimesheetUserId(activeUser?.id || null);
-    }
-
-    showToast(`Profil ${target?.name || ''} supprimé.`);
+  const handleUpdateDepartment = (deptId, field, value) => {
+    if (!canManageTeam) return;
+    setDepartments((prev) =>
+      prev.map((d) => (d.id === deptId ? { ...d, [field]: value } : d))
+    );
+    showToast('Service mis à jour.');
   };
 
-  const handleClearAllUsers = () => {
-    if (activeUser && !canManageTeam) {
-      showToast('Action réservée au Manager et à la RH.', 'error');
-      return;
-    }
-    setUsers([]);
-    setTimeLogs({});
-    setLeaveRequests([]);
-    setCurrentUserId(null);
-    setSelectedTimesheetUserId(null);
-    showToast('Tous les profils locaux ont été supprimés.');
+  const handleDeleteDepartment = (deptId) => {
+    if (!canManageTeam) return;
+    const dept = departments.find((d) => d.id === deptId);
+    setDepartments((prev) => prev.filter((d) => d.id !== deptId));
+    setUsers((prev) =>
+      prev.map((u) => (u.departmentId === deptId ? { ...u, departmentId: '' } : u))
+    );
+    showToast(`Service "${dept?.name || ''}" supprimé.`);
   };
 
   const handleAddTeamMember = (e) => {
@@ -504,6 +533,7 @@ export default function App() {
       email: normalizedEmail,
       name: cleanName,
       role: newMember.role,
+      departmentId: newMember.departmentId || '',
       contractType: newMember.contractType,
       jobTitle: newMember.jobTitle.trim() || 'Collaborateur',
       avatar: buildInitials(cleanName),
@@ -524,6 +554,7 @@ export default function App() {
       email: '',
       jobTitle: 'Collaborateur',
       role: 'collaborator',
+      departmentId: '',
       contractType: 'HOURLY',
       weeklyHours: 35,
       annualRttQuota: 12,
@@ -1013,6 +1044,8 @@ export default function App() {
       };
     } else if (field === 'role') {
       updatedFields = { role: value };
+    } else if (field === 'departmentId') {
+      updatedFields = { departmentId: value };
     } else if (field === 'name') {
       updatedFields = { name: value, avatar: buildInitials(value) };
     } else if (field === 'email') {
@@ -1078,6 +1111,9 @@ export default function App() {
 
   const filteredCalendarUsers = useMemo(() => {
     const baseList = users.filter((u) => {
+      if (departmentFilter !== 'ALL' && u.departmentId !== departmentFilter) {
+        return false;
+      }
       if (u.isActive === false) {
         return calendarUserFilter === u.id || calendarStatusFilter !== 'ALL';
       }
@@ -1085,10 +1121,7 @@ export default function App() {
     });
     if (calendarUserFilter === 'ALL') return baseList;
     return baseList.filter((u) => u.id === calendarUserFilter);
-  }, [users, calendarUserFilter, calendarStatusFilter]);
-  if (!activeUser) {
-    const canBootstrapInitialProfile = users.length === 0;
-    return (
+  }, [users, departmentFilter, calendarUserFilter, calendarStatusFilter]);
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-lg bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
           <div className="flex flex-col items-center text-center space-y-2">
@@ -1494,8 +1527,10 @@ export default function App() {
             <div className="flex items-center gap-2.5 text-sm text-indigo-950">
               <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
               <span>
-                Mode <strong>{isManager ? 'Manager' : 'RH'}</strong> actif : sélectionnez un
-                collaborateur pour consulter ou saisir sa feuille de temps.
+                Mode <strong>{isManager ? 'Manager' : 'RH'}</strong> actif :{' '}
+                {isHR
+                  ? 'vous avez accès à l’ensemble des services et collaborateurs.'
+                  : 'sélectionnez un collaborateur de votre périmètre pour consulter ou saisir sa feuille de temps.'}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1508,14 +1543,17 @@ export default function App() {
                 onChange={(e) => setSelectedTimesheetUserId(e.target.value)}
                 className="bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} —{' '}
-                    {u.contractType === 'FORFAIT_JOURS'
-                      ? 'Cadre (Forfait Jours)'
-                      : `${u.weeklyHours}h / sem`}
-                  </option>
-                ))}
+                {visibleUsers.map((u) => {
+                  const dept = departments.find((d) => d.id === u.departmentId);
+                  return (
+                    <option key={u.id} value={u.id}>
+                      {u.name} {dept ? `[${dept.name}]` : ''} —{' '}
+                      {u.contractType === 'FORFAIT_JOURS'
+                        ? 'Cadre (Forfait Jours)'
+                        : `${u.weeklyHours}h / sem`}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
@@ -2412,6 +2450,125 @@ export default function App() {
 
         {activeTab === 'team_settings' && canManageTeam && (
           <div className="space-y-6">
+            {/* Création & gestion des services avec manager rattaché (RH & Manager) */}
+            <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Services & Managers rattachés
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {isHR
+                      ? 'Vue RH globale : créez les services et rattachez le manager responsable à la tête de chacun.'
+                      : 'Associez chaque service à son manager responsable et rattachez vos collaborateurs.'}
+                  </p>
+                </div>
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 w-fit">
+                  {isHR ? 'Accès RH : Tous les services' : 'Accès Manager'}
+                </span>
+              </div>
+
+              <form
+                onSubmit={handleCreateDepartment}
+                className="grid grid-cols-1 sm:grid-cols-3 gap-3"
+              >
+                <input
+                  type="text"
+                  required
+                  value={newDepartment.name}
+                  onChange={(e) => setNewDepartment({ ...newDepartment, name: e.target.value })}
+                  placeholder="Nom du service (ex. Marketing, Commerce, Tech...)"
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
+                />
+                <select
+                  value={newDepartment.managerId}
+                  onChange={(e) =>
+                    setNewDepartment({ ...newDepartment, managerId: e.target.value })
+                  }
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                >
+                  <option value="">— Manager rattaché à la tête du service —</option>
+                  {users
+                    .filter((u) => u.role === 'manager' || u.role === 'hr')
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.role === 'manager' ? 'Manager' : 'RH'})
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="submit"
+                  className="py-2 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
+                >
+                  Créer le service
+                </button>
+              </form>
+
+              {departments.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
+                  {departments.map((dept) => {
+                    const deptManager = users.find((u) => u.id === dept.managerId);
+                    const membersInDept = users.filter((u) => u.departmentId === dept.id);
+                    return (
+                      <div
+                        key={dept.id}
+                        className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <input
+                            type="text"
+                            value={dept.name}
+                            onChange={(e) =>
+                              handleUpdateDepartment(dept.id, 'name', e.target.value)
+                            }
+                            className="font-bold text-sm text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200 flex-1"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDepartment(dept.id)}
+                            className="px-2.5 py-1 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-xs font-semibold text-rose-700"
+                          >
+                            Suppr.
+                          </button>
+                        </div>
+
+                        <div className="text-xs text-slate-600">
+                          <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                            Manager rattaché
+                          </label>
+                          <select
+                            value={dept.managerId || ''}
+                            onChange={(e) =>
+                              handleUpdateDepartment(dept.id, 'managerId', e.target.value)
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white"
+                          >
+                            <option value="">Non rattaché</option>
+                            {users
+                              .filter((u) => u.role === 'manager' || u.role === 'hr')
+                              .map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.name} ({m.role === 'manager' ? 'Manager' : 'RH'})
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+
+                        <div className="text-[11px] text-slate-500 flex items-center justify-between pt-1 border-t border-slate-200/70">
+                          <span>
+                            Chef : <strong>{deptManager?.name || 'Aucun'}</strong>
+                          </span>
+                          <span>
+                            <strong>{membersInDept.length}</strong> membre(s)
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
             <form
               onSubmit={handleAddTeamMember}
               className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4"
@@ -2423,7 +2580,7 @@ export default function App() {
                 </h2>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
                 <input
                   type="text"
                   required
@@ -2440,6 +2597,20 @@ export default function App() {
                   placeholder="email@entreprise.fr *"
                   className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
                 />
+                <select
+                  value={newMember.departmentId}
+                  onChange={(e) =>
+                    setNewMember({ ...newMember, departmentId: e.target.value })
+                  }
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                >
+                  <option value="">Service (aucun)</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={newMember.role}
                   onChange={(e) => setNewMember({ ...newMember, role: e.target.value })}
@@ -2599,19 +2770,34 @@ export default function App() {
                     Gestion des équipes, contrats horaires et forfait jours
                   </h2>
                   <p className="text-xs text-slate-500">
-                    Définissez pour chaque collaborateur son adresse email, son rôle, ses dates
-                    d’entrée/sortie, son statut actif/désactivé, son contrat et sa suppression.
+                    Définissez pour chaque collaborateur son service, son manager rattaché, son
+                    adresse email, son rôle, ses dates d’entrée/sortie, son statut et son contrat.
                   </p>
                 </div>
-                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={showInactiveMembers}
-                    onChange={(e) => setShowInactiveMembers(e.target.checked)}
-                    className="rounded border-slate-300 text-slate-900"
-                  />
-                  <span>Afficher les collaborateurs désactivés</span>
-                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <select
+                    aria-label="Filtrer par service"
+                    value={departmentFilter}
+                    onChange={(e) => setDepartmentFilter(e.target.value)}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                  >
+                    <option value="ALL">Tous les services</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={showInactiveMembers}
+                      onChange={(e) => setShowInactiveMembers(e.target.checked)}
+                      className="rounded border-slate-300 text-slate-900"
+                    />
+                    <span>Afficher les collaborateurs désactivés</span>
+                  </label>
+                </div>
               </div>
 
               <div className="overflow-x-auto">
@@ -2619,6 +2805,7 @@ export default function App() {
                   <thead>
                     <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-50">
                       <th className="py-3 px-4">Collaborateur & Email</th>
+                      <th className="py-3 px-4">Service & Manager</th>
                       <th className="py-3 px-4">Entrée / Sortie</th>
                       <th className="py-3 px-4">Statut</th>
                       <th className="py-3 px-4">Rôle</th>
@@ -2632,11 +2819,17 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-sm">
                     {users
-                      .filter((u) => showInactiveMembers || u.isActive !== false)
+                      .filter(
+                        (u) =>
+                          (departmentFilter === 'ALL' || u.departmentId === departmentFilter) &&
+                          (showInactiveMembers || u.isActive !== false)
+                      )
                       .map((u) => {
                         const isUserForfait = u.contractType === 'FORFAIT_JOURS';
                         const isSelf = u.id === activeUser.id;
                         const isMemberActive = u.isActive !== false;
+                        const memberDept = departments.find((d) => d.id === u.departmentId);
+                        const deptManager = users.find((m) => m.id === memberDept?.managerId);
                         return (
                           <tr
                             key={u.id}
@@ -2669,6 +2862,27 @@ export default function App() {
                                     className="block text-xs text-slate-500 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
                                   />
                                 </div>
+                              </div>
+                            </td>
+
+                            <td className="py-3.5 px-4 space-y-1">
+                              <select
+                                value={u.departmentId || ''}
+                                onChange={(e) =>
+                                  handleUpdateUserContract(u.id, 'departmentId', e.target.value)
+                                }
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 cursor-pointer"
+                              >
+                                <option value="">Aucun service</option>
+                                {departments.map((d) => (
+                                  <option key={d.id} value={d.id}>
+                                    {d.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <div className="text-[11px] text-slate-500">
+                                Manager :{' '}
+                                <strong>{deptManager?.name || 'Non rattaché'}</strong>
                               </div>
                             </td>
 
