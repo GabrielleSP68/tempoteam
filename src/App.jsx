@@ -264,15 +264,15 @@ export default function App() {
     weeklyHours: 35,
     annualRttQuota: 12,
     annualCpQuota: 25,
+    entryDate: formatDateISO(new Date()),
+    exitDate: '',
+    isActive: true,
   });
 
   // Profil consulté par le manager ou la RH
   const [selectedTimesheetUserId, setSelectedTimesheetUserId] = useState(null);
   const [requestStatusFilter, setRequestStatusFilter] = useState('ALL');
-
-  // Navigation & Filtres
-  const [activeTab, setActiveTab] = useState('timesheet');
-  const [currentWeekStart, setCurrentWeekStart] = useState(() => getMondayOfWeek(new Date()));
+  const [showInactiveMembers, setShowInactiveMembers] = useState(true);
   const [includeWeekend, setIncludeWeekend] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -421,6 +421,9 @@ export default function App() {
       initialBalanceMinutes: 0,
       annualRttQuota: isForfait ? 12 : 0,
       annualCpQuota: 25,
+      entryDate: formatDateISO(new Date()),
+      exitDate: '',
+      isActive: true,
     };
 
     setUsers((prev) => [...prev, newProfile]);
@@ -510,6 +513,9 @@ export default function App() {
       initialBalanceMinutes: 0,
       annualRttQuota: isForfait ? Number(newMember.annualRttQuota) || 12 : 0,
       annualCpQuota: Number(newMember.annualCpQuota) || 25,
+      entryDate: newMember.entryDate || formatDateISO(new Date()),
+      exitDate: newMember.exitDate || '',
+      isActive: Boolean(newMember.isActive),
     };
 
     setUsers((prev) => [...prev, created]);
@@ -522,6 +528,9 @@ export default function App() {
       weeklyHours: 35,
       annualRttQuota: 12,
       annualCpQuota: 25,
+      entryDate: formatDateISO(new Date()),
+      exitDate: '',
+      isActive: true,
     });
     showToast(`Profil ${created.name} ajouté avec succès.`);
   };
@@ -1008,6 +1017,19 @@ export default function App() {
       updatedFields = { name: value, avatar: buildInitials(value) };
     } else if (field === 'email') {
       updatedFields = { email: value.trim().toLowerCase() };
+    } else if (field === 'entryDate') {
+      updatedFields = { entryDate: value };
+    } else if (field === 'exitDate') {
+      updatedFields = {
+        exitDate: value,
+        isActive: value ? false : target.isActive,
+      };
+    } else if (field === 'isActive') {
+      const nextActive = Boolean(value);
+      updatedFields = {
+        isActive: nextActive,
+        exitDate: nextActive ? '' : target.exitDate || formatDateISO(new Date()),
+      };
     } else {
       const numVal = parseFloat(value);
       if (isNaN(numVal)) return;
@@ -1055,15 +1077,15 @@ export default function App() {
   }, [calendarMonth, getHolidayName]);
 
   const filteredCalendarUsers = useMemo(() => {
-    if (calendarUserFilter === 'ALL') return users;
-    return users.filter((u) => u.id === calendarUserFilter);
-  }, [users, calendarUserFilter]);
-
-  const pendingRequestsCount = useMemo(
-    () => leaveRequests.filter((r) => r.status === 'PENDING').length,
-    [leaveRequests]
-  );
-
+    const baseList = users.filter((u) => {
+      if (u.isActive === false) {
+        return calendarUserFilter === u.id || calendarStatusFilter !== 'ALL';
+      }
+      return true;
+    });
+    if (calendarUserFilter === 'ALL') return baseList;
+    return baseList.filter((u) => u.id === calendarUserFilter);
+  }, [users, calendarUserFilter, calendarStatusFilter]);
   if (!activeUser) {
     const canBootstrapInitialProfile = users.length === 0;
     return (
@@ -1324,6 +1346,29 @@ export default function App() {
                   ({isManager ? 'Manager' : isHR ? 'RH' : 'Collaborateur'})
                 </span>
               </div>
+
+              {canManageTeam && (
+                <select
+                  aria-label="Basculer vers un profil (Manager et RH uniquement)"
+                  value={activeUser.id}
+                  onChange={(e) => {
+                    setCurrentUserId(e.target.value);
+                    setSelectedTimesheetUserId(e.target.value);
+                  }}
+                  className="bg-indigo-50 text-xs font-bold text-indigo-950 rounded-xl px-3 py-2 border border-indigo-200 cursor-pointer"
+                >
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      Switch : {u.name} {u.isActive === false ? '(Désactivé)' : ''} —{' '}
+                      {u.role === 'manager'
+                        ? 'Manager'
+                        : u.role === 'hr'
+                        ? 'RH'
+                        : 'Collaborateur'}
+                    </option>
+                  ))}
+                </select>
+              )}
 
               <button
                 type="button"
@@ -2441,6 +2486,50 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Date d’entrée dans la société
+                  </label>
+                  <input
+                    type="date"
+                    value={newMember.entryDate}
+                    onChange={(e) => setNewMember({ ...newMember, entryDate: e.target.value })}
+                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Date de sortie (si départ)
+                  </label>
+                  <input
+                    type="date"
+                    value={newMember.exitDate}
+                    onChange={(e) =>
+                      setNewMember({
+                        ...newMember,
+                        exitDate: e.target.value,
+                        isActive: e.target.value ? false : newMember.isActive,
+                      })
+                    }
+                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs"
+                  />
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newMember.isActive}
+                      onChange={(e) =>
+                        setNewMember({ ...newMember, isActive: e.target.checked })
+                      }
+                      className="rounded border-slate-300 text-slate-900"
+                    />
+                    <span>Compte actif</span>
+                  </label>
+                </div>
+              </div>
             </form>
 
             <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
@@ -2504,14 +2593,25 @@ export default function App() {
             </section>
 
             <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">
-                  Gestion des équipes, contrats horaires et forfait jours
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Définissez pour chaque collaborateur son adresse email, son rôle, son statut Cadre
-                  au Forfait Jours ou son taux horaire hebdomadaire (ex. : 35h, 37h, 39h).
-                </p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">
+                    Gestion des équipes, contrats horaires et forfait jours
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Définissez pour chaque collaborateur son adresse email, son rôle, ses dates
+                    d’entrée/sortie, son statut actif/désactivé, son contrat et sa suppression.
+                  </p>
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showInactiveMembers}
+                    onChange={(e) => setShowInactiveMembers(e.target.checked)}
+                    className="rounded border-slate-300 text-slate-900"
+                  />
+                  <span>Afficher les collaborateurs désactivés</span>
+                </label>
               </div>
 
               <div className="overflow-x-auto">
@@ -2519,182 +2619,247 @@ export default function App() {
                   <thead>
                     <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-50">
                       <th className="py-3 px-4">Collaborateur & Email</th>
+                      <th className="py-3 px-4">Entrée / Sortie</th>
+                      <th className="py-3 px-4">Statut</th>
                       <th className="py-3 px-4">Rôle</th>
                       <th className="py-3 px-4">Type de contrat</th>
                       <th className="py-3 px-4">Base horaire (h/sem)</th>
                       <th className="py-3 px-4">Solde initial (min)</th>
                       <th className="py-3 px-4">Quota RTT annuel (j)</th>
                       <th className="py-3 px-4">Quota CP annuel (j)</th>
-                      <th className="py-3 px-4 text-right">Suppression</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-sm">
-                    {users.map((u) => {
-                      const isUserForfait = u.contractType === 'FORFAIT_JOURS';
-                      const isSelf = u.id === activeUser.id;
-                      return (
-                        <tr key={u.id} className="hover:bg-slate-50/70">
-                          <td className="py-3.5 px-4">
-                            <div className="flex items-center gap-3">
-                              <span
-                                className={`w-8 h-8 rounded-full ${u.color} text-white text-xs font-bold flex items-center justify-center shrink-0`}
-                              >
-                                {u.avatar}
-                              </span>
-                              <div className="space-y-1">
+                    {users
+                      .filter((u) => showInactiveMembers || u.isActive !== false)
+                      .map((u) => {
+                        const isUserForfait = u.contractType === 'FORFAIT_JOURS';
+                        const isSelf = u.id === activeUser.id;
+                        const isMemberActive = u.isActive !== false;
+                        return (
+                          <tr
+                            key={u.id}
+                            className={`hover:bg-slate-50/70 ${
+                              !isMemberActive ? 'bg-slate-50/80 opacity-80' : ''
+                            }`}
+                          >
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center gap-3">
+                                <span
+                                  className={`w-8 h-8 rounded-full ${u.color} text-white text-xs font-bold flex items-center justify-center shrink-0`}
+                                >
+                                  {u.avatar}
+                                </span>
+                                <div className="space-y-1">
+                                  <input
+                                    type="text"
+                                    value={u.name}
+                                    onChange={(e) =>
+                                      handleUpdateUserContract(u.id, 'name', e.target.value)
+                                    }
+                                    className="block font-bold text-slate-900 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none text-sm"
+                                  />
+                                  <input
+                                    type="email"
+                                    value={u.email}
+                                    onChange={(e) =>
+                                      handleUpdateUserContract(u.id, 'email', e.target.value)
+                                    }
+                                    className="block text-xs text-slate-500 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
+                                  />
+                                </div>
+                              </div>
+                            </td>
+
+                            <td className="py-3.5 px-4 space-y-1">
+                              <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                                <span className="w-12 font-semibold">Entrée :</span>
                                 <input
-                                  type="text"
-                                  value={u.name}
+                                  type="date"
+                                  value={u.entryDate || ''}
                                   onChange={(e) =>
-                                    handleUpdateUserContract(u.id, 'name', e.target.value)
+                                    handleUpdateUserContract(u.id, 'entryDate', e.target.value)
                                   }
-                                  className="block font-bold text-slate-900 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none text-sm"
-                                />
-                                <input
-                                  type="email"
-                                  value={u.email}
-                                  onChange={(e) =>
-                                    handleUpdateUserContract(u.id, 'email', e.target.value)
-                                  }
-                                  className="block text-xs text-slate-500 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
+                                  className="px-2 py-1 rounded border border-slate-200 text-xs bg-white text-slate-700"
                                 />
                               </div>
-                            </div>
-                          </td>
+                              <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                                <span className="w-12 font-semibold">Sortie :</span>
+                                <input
+                                  type="date"
+                                  value={u.exitDate || ''}
+                                  onChange={(e) =>
+                                    handleUpdateUserContract(u.id, 'exitDate', e.target.value)
+                                  }
+                                  className="px-2 py-1 rounded border border-slate-200 text-xs bg-white text-slate-700"
+                                />
+                              </div>
+                            </td>
 
-                          <td className="py-3.5 px-4">
-                            <select
-                              value={u.role}
-                              onChange={(e) =>
-                                handleUpdateUserContract(u.id, 'role', e.target.value)
-                              }
-                              className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-700 cursor-pointer"
-                            >
-                              <option value="collaborator">Collaborateur</option>
-                              <option value="hr">RH</option>
-                              <option value="manager">Manager</option>
-                            </select>
-                          </td>
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <button
+                                type="button"
+                                disabled={isSelf}
+                                onClick={() =>
+                                  handleUpdateUserContract(u.id, 'isActive', !isMemberActive)
+                                }
+                                className={`px-2.5 py-1 rounded-full text-xs font-bold border transition-colors ${
+                                  isMemberActive
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                    : 'bg-slate-200 text-slate-700 border-slate-300 hover:bg-slate-300'
+                                } disabled:opacity-60`}
+                              >
+                                {isMemberActive ? 'Actif' : 'Désactivé'}
+                              </button>
+                            </td>
 
-                          <td className="py-3.5 px-4">
-                            <select
-                              value={u.contractType}
-                              onChange={(e) =>
-                                handleUpdateUserContract(u.id, 'contractType', e.target.value)
-                              }
-                              className={`px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
-                                isUserForfait
-                                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              }`}
-                            >
-                              <option value="FORFAIT_JOURS">Cadre au Forfait Jours</option>
-                              <option value="HOURLY">Taux Horaire</option>
-                            </select>
-                          </td>
+                            <td className="py-3.5 px-4">
+                              <select
+                                value={u.role}
+                                onChange={(e) =>
+                                  handleUpdateUserContract(u.id, 'role', e.target.value)
+                                }
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-700 cursor-pointer"
+                              >
+                                <option value="collaborator">Collaborateur</option>
+                                <option value="hr">RH</option>
+                                <option value="manager">Manager</option>
+                              </select>
+                            </td>
 
-                          <td className="py-3.5 px-4">
-                            {isUserForfait ? (
-                              <span className="text-xs text-slate-400 italic">
-                                Non applicable (Forfait)
-                              </span>
-                            ) : (
-                              <div className="space-y-1.5">
-                                <div className="flex items-center gap-1">
-                                  {[35, 37, 39].map((preset) => (
-                                    <button
-                                      key={preset}
-                                      type="button"
-                                      onClick={() =>
-                                        handleUpdateUserContract(u.id, 'weeklyHours', preset)
-                                      }
-                                      className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
-                                        Number(u.weeklyHours) === preset
-                                          ? 'bg-slate-900 text-white border-slate-900'
-                                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                      }`}
-                                    >
-                                      {preset}h
-                                    </button>
-                                  ))}
+                            <td className="py-3.5 px-4">
+                              <select
+                                value={u.contractType}
+                                onChange={(e) =>
+                                  handleUpdateUserContract(u.id, 'contractType', e.target.value)
+                                }
+                                className={`px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
+                                  isUserForfait
+                                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                }`}
+                              >
+                                <option value="FORFAIT_JOURS">Cadre au Forfait Jours</option>
+                                <option value="HOURLY">Taux Horaire</option>
+                              </select>
+                            </td>
+
+                            <td className="py-3.5 px-4">
+                              {isUserForfait ? (
+                                <span className="text-xs text-slate-400 italic">
+                                  Non applicable (Forfait)
+                                </span>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center gap-1">
+                                    {[35, 37, 39].map((preset) => (
+                                      <button
+                                        key={preset}
+                                        type="button"
+                                        onClick={() =>
+                                          handleUpdateUserContract(u.id, 'weeklyHours', preset)
+                                        }
+                                        className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
+                                          Number(u.weeklyHours) === preset
+                                            ? 'bg-slate-900 text-white border-slate-900'
+                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                        }`}
+                                      >
+                                        {preset}h
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <input
+                                    type="number"
+                                    step="0.5"
+                                    min="1"
+                                    max="60"
+                                    value={u.weeklyHours}
+                                    onChange={(e) =>
+                                      handleUpdateUserContract(u.id, 'weeklyHours', e.target.value)
+                                    }
+                                    className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
+                                  />
                                 </div>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4">
+                              {isUserForfait ? (
+                                <span className="text-xs text-slate-400 italic">—</span>
+                              ) : (
                                 <input
                                   type="number"
-                                  step="0.5"
-                                  min="1"
-                                  max="60"
-                                  value={u.weeklyHours}
+                                  step="15"
+                                  value={u.initialBalanceMinutes}
                                   onChange={(e) =>
-                                    handleUpdateUserContract(u.id, 'weeklyHours', e.target.value)
+                                    handleUpdateUserContract(
+                                      u.id,
+                                      'initialBalanceMinutes',
+                                      e.target.value
+                                    )
                                   }
                                   className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
                                 />
-                              </div>
-                            )}
-                          </td>
+                              )}
+                            </td>
 
-                          <td className="py-3.5 px-4">
-                            {isUserForfait ? (
-                              <span className="text-xs text-slate-400 italic">—</span>
-                            ) : (
+                            <td className="py-3.5 px-4">
                               <input
                                 type="number"
-                                step="15"
-                                value={u.initialBalanceMinutes}
+                                step="0.5"
+                                min="0"
+                                value={u.annualRttQuota}
                                 onChange={(e) =>
-                                  handleUpdateUserContract(
-                                    u.id,
-                                    'initialBalanceMinutes',
-                                    e.target.value
-                                  )
+                                  handleUpdateUserContract(u.id, 'annualRttQuota', e.target.value)
                                 }
-                                className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
+                                className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
                               />
-                            )}
-                          </td>
+                            </td>
 
-                          <td className="py-3.5 px-4">
-                            <input
-                              type="number"
-                              step="0.5"
-                              min="0"
-                              value={u.annualRttQuota}
-                              onChange={(e) =>
-                                handleUpdateUserContract(u.id, 'annualRttQuota', e.target.value)
-                              }
-                              className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
-                            />
-                          </td>
+                            <td className="py-3.5 px-4">
+                              <input
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                value={u.annualCpQuota}
+                                onChange={(e) =>
+                                  handleUpdateUserContract(u.id, 'annualCpQuota', e.target.value)
+                                }
+                                className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
+                              />
+                            </td>
 
-                          <td className="py-3.5 px-4">
-                            <input
-                              type="number"
-                              step="0.5"
-                              min="0"
-                              value={u.annualCpQuota}
-                              onChange={(e) =>
-                                handleUpdateUserContract(u.id, 'annualCpQuota', e.target.value)
-                              }
-                              className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
-                            />
-                          </td>
-
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                            {isSelf ? (
-                              <span className="text-xs text-slate-400 italic">Session active</span>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteUser(u.id)}
-                                className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50/70 hover:bg-rose-100 text-xs font-semibold text-rose-700 transition-colors"
-                              >
-                                Supprimer
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              {isSelf ? (
+                                <span className="text-xs text-slate-400 italic">
+                                  Session active
+                                </span>
+                              ) : (
+                                <div className="inline-flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleUpdateUserContract(u.id, 'isActive', !isMemberActive)
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
+                                  >
+                                    {isMemberActive ? 'Désactiver' : 'Réactiver'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteUser(u.id)}
+                                    className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50/70 hover:bg-rose-100 text-xs font-semibold text-rose-700 transition-colors"
+                                  >
+                                    Supprimer
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>
