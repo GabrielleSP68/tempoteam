@@ -1,25 +1,59 @@
-// ... existing code ...
-      const mappedUsers = (profilesRes.data || []).map((p) => ({
-        id: p.id,
-        email: p.email,
-        name: p.full_name || p.email.split('@')[0],
-        role: p.role || 'collaborator',
-        contractType: p.contract_type || 'HOURLY',
-        jobTitle: p.job_title || 'Collaborateur',
-        avatar: p.avatar_initials || (p.full_name || p.email).slice(0, 2).toUpperCase(),
-        color: p.avatar_color || 'bg-indigo-600',
-        weeklyHours: Number(p.weekly_hours ?? 35),
-        dailyHours: Number(p.daily_hours ?? 7),
-        initialBalanceMinutes: Number(p.initial_balance_minutes ?? 0),
-        annualRttQuota: Number(p.annual_rtt_quota ?? 0),
-        annualCpQuota: Number(p.annual_cp_quota ?? 25),
-      }));
+const mappedUsers = (profilesRes.data || []).map((p) => {
+        const normalizedRole = String(p.role || 'collaborator').trim().toLowerCase();
+        const normalizedContract =
+          String(p.contract_type || 'HOURLY').trim().toUpperCase() === 'FORFAIT_JOURS'
+            ? 'FORFAIT_JOURS'
+            : 'HOURLY';
+
+        return {
+          id: p.id,
+          email: p.email,
+          name: p.full_name || p.email.split('@')[0],
+          role: normalizedRole,
+          contractType: normalizedContract,
+          jobTitle: p.job_title || 'Collaborateur',
+          avatar: p.avatar_initials || (p.full_name || p.email).slice(0, 2).toUpperCase(),
+          color: p.avatar_color || 'bg-indigo-600',
+          weeklyHours: Number(p.weekly_hours ?? 35),
+          dailyHours: Number(p.daily_hours ?? 7),
+          initialBalanceMinutes: Number(p.initial_balance_minutes ?? 0),
+          annualRttQuota: Number(p.annual_rtt_quota ?? 0),
+          annualCpQuota: Number(p.annual_cp_quota ?? 25),
+        };
+      });
 
       setUsers(mappedUsers);
       setSelectedTimesheetUserId((prev) => prev || session.user.id);
-// ... existing code ...
-  const isManager = activeUser?.role === 'manager' || activeUser?.role === 'hr';
-  const isHR = activeUser?.role === 'hr';
+  // Utilisateur connecté & profil consulté
+  const activeUser = useMemo(() => {
+    if (!session?.user) return null;
+    const sessionEmail = (session.user.email || '').trim().toLowerCase();
+    return (
+      users.find(
+        (u) =>
+          u.id === session.user.id ||
+          (sessionEmail && (u.email || '').trim().toLowerCase() === sessionEmail)
+      ) || {
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.email?.split('@')[0] || 'Utilisateur',
+        role: 'collaborator',
+        contractType: 'HOURLY',
+        jobTitle: 'Collaborateur',
+        avatar: 'US',
+        color: 'bg-indigo-600',
+        weeklyHours: 35,
+        dailyHours: 7,
+        initialBalanceMinutes: 0,
+        annualRttQuota: 0,
+        annualCpQuota: 25,
+      }
+    );
+  }, [users, session]);
+
+  const normalizedActiveRole = String(activeUser?.role || '').trim().toLowerCase();
+  const isManager = normalizedActiveRole === 'manager' || normalizedActiveRole === 'hr';
+  const isHR = normalizedActiveRole === 'hr';
   const canManageTeam = isManager;
 
   const inspectedUser = useMemo(() => {
@@ -30,91 +64,86 @@
 
   const isForfaitJours = inspectedUser?.contractType === 'FORFAIT_JOURS';
   const isActiveUserForfaitJours = activeUser?.contractType === 'FORFAIT_JOURS';
-// ... existing code ...
-  const handleReviewLeaveRequest = async (requestId, decision) => {
-    const targetReq = leaveRequests.find((r) => r.id === requestId);
-    if (!targetReq) return;
+
+  // État & sauvegarde du profil personnel (sans passer par Supabase)
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    name: '',
+    jobTitle: '',
+    contractType: 'HOURLY',
+    weeklyHours: 35,
+  });
+
+  const openOwnProfileModal = () => {
+    if (!activeUser) return;
+    setProfileForm({
+      name: activeUser.name || '',
+      jobTitle: activeUser.jobTitle || 'Collaborateur',
+      contractType: activeUser.contractType || 'HOURLY',
+      weeklyHours: Number(activeUser.weeklyHours ?? 35),
+    });
+    setIsProfileModalOpen(true);
+  };
+
+  const handleSaveOwnProfile = async (e) => {
+    e.preventDefault();
+    if (!activeUser) return;
+
+    const trimmedName = profileForm.name.trim() || activeUser.name;
+    const isForfait = profileForm.contractType === 'FORFAIT_JOURS';
+    const nextWeekly = isForfait ? 0 : Math.max(1, Number(profileForm.weeklyHours) || 35);
+    const nextDaily = isForfait ? 0 : Number((nextWeekly / 5).toFixed(2));
+    const nextInitials = trimmedName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join('')
+      .toUpperCase()
+      .padEnd(2, 'U');
+
+    const updatedLocal = {
+      name: trimmedName,
+      jobTitle: profileForm.jobTitle.trim() || 'Collaborateur',
+      contractType: profileForm.contractType,
+      weeklyHours: nextWeekly,
+      dailyHours: nextDaily,
+      avatar: nextInitials,
+    };
+
+    setUsers((prev) => {
+      const exists = prev.some((u) => u.id === activeUser.id);
+      if (exists) {
+        return prev.map((u) => (u.id === activeUser.id ? { ...u, ...updatedLocal } : u));
+      }
+      return [{ ...activeUser, ...updatedLocal }, ...prev];
+    });
 
     setIsSyncing(true);
     try {
-      const { error: updateErr } = await supabase
-        .from('leave_requests')
-        .update({ status: decision })
-        .eq('id', requestId);
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          full_name: updatedLocal.name,
+          job_title: updatedLocal.jobTitle,
+          contract_type: updatedLocal.contractType,
+          weekly_hours: updatedLocal.weeklyHours,
+          daily_hours: updatedLocal.dailyHours,
+          avatar_initials: updatedLocal.avatar,
+        })
+        .eq('id', activeUser.id);
 
-      if (updateErr) throw updateErr;
-
-      setLeaveRequests((prev) =>
-        prev.map((r) => (r.id === requestId ? { ...r, status: decision } : r))
-      );
-
-      if (decision === 'APPROVED') {
-        const start = parseDateISO(targetReq.startDate);
-        const end = parseDateISO(targetReq.endDate);
-        const updatedLogs = { ...timeLogs };
-        const targetUser = users.find((u) => u.id === targetReq.userId);
-        const upserts = [];
-
-        let curr = new Date(start);
-        while (curr <= end) {
-          const dayOfWeek = curr.getDay();
-          const iso = formatDateISO(curr);
-          if (dayOfWeek !== 0 && dayOfWeek !== 6 && !getHolidayName(iso)) {
-            let newEntry;
-            if (targetReq.type === 'REMOTE') {
-              const existing = updatedLogs[`${targetReq.userId}_${iso}`] || {};
-              newEntry = {
-                ...existing,
-                status: targetUser?.contractType === 'FORFAIT_JOURS' ? 'REMOTE' : 'WORKED',
-                isRemote: true,
-                morningStart: existing.morningStart || '',
-                morningEnd: existing.morningEnd || '',
-                afternoonStart: existing.afternoonStart || '',
-                afternoonEnd: existing.afternoonEnd || '',
-              };
-            } else {
-              newEntry = {
-                status: targetReq.type,
-                isRemote: false,
-                morningStart: '',
-                morningEnd: '',
-                afternoonStart: '',
-                afternoonEnd: '',
-              };
-            }
-            updatedLogs[`${targetReq.userId}_${iso}`] = newEntry;
-            upserts.push({
-              user_id: targetReq.userId,
-              log_date: iso,
-              status: newEntry.status,
-              is_remote: newEntry.isRemote,
-              morning_start: newEntry.morningStart,
-              morning_end: newEntry.morningEnd,
-              afternoon_start: newEntry.afternoonStart,
-              afternoon_end: newEntry.afternoonEnd,
-              updated_at: new Date().toISOString(),
-            });
-          }
-          curr = addDays(curr, 1);
-        }
-
-        if (upserts.length > 0) {
-          const { error: logsErr } = await supabase
-            .from('time_logs')
-            .upsert(upserts, { onConflict: 'user_id,log_date' });
-          if (logsErr) throw logsErr;
-        }
-
-        setTimeLogs(updatedLogs);
-        showToast('Demande acceptée ! La feuille de temps et le calendrier sont à jour.');
-      } else if (decision === 'REJECTED') {
-        showToast('La demande a été refusée.', 'info');
+      if (error) {
+        console.warn('Mise à jour profil cloud partielle ou différée:', error);
+        showToast('Profil mis à jour dans l’application.', 'info');
       } else {
-        showToast('La demande est repassée en attente de validation.', 'info');
+        showToast('Votre profil a bien été enregistré.');
       }
+      setIsProfileModalOpen(false);
     } catch (err) {
-      console.error('Erreur validation demande:', err);
-      showToast('Erreur lors de la mise à jour de la demande.', 'error');
+      console.error('Erreur sauvegarde profil:', err);
+      showToast('Profil mis à jour localement.', 'info');
+      setIsProfileModalOpen(false);
     } finally {
       setIsSyncing(false);
     }
@@ -144,35 +173,35 @@
                   </span>
                 </div>
               </div>
-// ... existing code ...
-            <button
-              onClick={() => setActiveTab('leaves')}
-              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                activeTab === 'leaves'
-                  ? 'border-slate-900 text-slate-900'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-              }`}
-            >
-              <FileText className="w-4 h-4" />
-              Congés & Télétravail
-              {canManageTeam && pendingRequestsCount > 0 && (
-                <span className="ml-1 px-2 py-0.5 text-xs font-bold rounded-full bg-amber-500 text-white">
-                  {pendingRequestsCount} en attente
-                </span>
-              )}
-            </button>
-
-            {canManageTeam && (
+              {/* Badge utilisateur connecté + accès direct à Mon compte */}
               <button
-                onClick={() => setActiveTab('team_settings')}
-                className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                  activeTab === 'team_settings'
-                    ? 'border-slate-900 text-slate-900'
-                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-                }`}
+                type="button"
+                onClick={openOwnProfileModal}
+                title="Modifier mon compte (nom, poste, contrat)"
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200/80 px-3 py-1.5 rounded-xl border border-slate-200/80 transition-colors cursor-pointer text-left"
               >
-                <Settings className="w-4 h-4" />
-                Équipe, Contrats & Statuts
+                {canManageTeam ? (
+                  <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
+                ) : (
+                  <UserCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                )}
+                <div className="text-xs">
+                  <span className="font-bold text-slate-900">{activeUser?.name}</span>
+                  <span className="text-slate-500 ml-1.5">
+                    (
+                    {isHR
+                      ? 'RH'
+                      : normalizedActiveRole === 'manager'
+                      ? 'Manager'
+                      : isActiveUserForfaitJours
+                      ? 'Cadre Forfait Jours'
+                      : `${activeUser?.weeklyHours}h`}
+                    )
+                  </span>
+                </div>
+                <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md hidden sm:inline">
+                  Mon compte
+                </span>
               </button>
             )}
           </nav>
@@ -313,149 +342,149 @@
 
                   <div className="flex flex-wrap items-center gap-2">
                     {canManageTeam && (
-                      <select
-                        value={leaveMemberFilter}
-                        onChange={(e) => setLeaveMemberFilter(e.target.value)}
-                        className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white text-slate-700"
+              <button
+                onClick={() => setActiveTab('team_settings')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  activeTab === 'team_settings'
+                    ? 'border-slate-900 text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+                Équipe, Contrats & Statuts
+              </button>
+            )}
+
+            <button
+              onClick={openOwnProfileModal}
+              className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 transition-colors whitespace-nowrap"
+            >
+              <UserCheck className="w-4 h-4" />
+              Mon compte
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      {/* MODALE : MODIFIER SON PROPRE COMPTE (SANS PASSER PAR SUPABASE) */}
+      {isProfileModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-2xs flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-xl p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Modifier mon compte</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Mettez à jour vos informations directement depuis l’application.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsProfileModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveOwnProfile} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Nom complet
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={profileForm.name}
+                  onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Intitulé du poste
+                </label>
+                <input
+                  type="text"
+                  value={profileForm.jobTitle}
+                  onChange={(e) => setProfileForm({ ...profileForm, jobTitle: e.target.value })}
+                  placeholder="Ex: Manager, RH, Chef de projet..."
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Mon régime / type de contrat
+                </label>
+                <select
+                  value={profileForm.contractType}
+                  onChange={(e) =>
+                    setProfileForm({ ...profileForm, contractType: e.target.value })
+                  }
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                >
+                  <option value="FORFAIT_JOURS">Cadre au Forfait Jours (sans heures)</option>
+                  <option value="HOURLY">Contrat Horaire (35h / 37h / 39h...)</option>
+                </select>
+              </div>
+
+              {profileForm.contractType === 'HOURLY' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                    Base hebdomadaire (heures / semaine)
+                  </label>
+                  <div className="flex items-center gap-2 mb-2">
+                    {[35, 37, 39].map((h) => (
+                      <button
+                        key={h}
+                        type="button"
+                        onClick={() => setProfileForm({ ...profileForm, weeklyHours: h })}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                          Number(profileForm.weeklyHours) === h
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                        }`}
                       >
-                        <option value="ALL">Tous les membres</option>
-                        {users.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-
-                    <select
-                      value={leaveStatusFilter}
-                      onChange={(e) => setLeaveStatusFilter(e.target.value)}
-                      className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white text-slate-700"
-                    >
-                      <option value="ALL">Tous les états</option>
-                      <option value="PENDING">En attente de validation</option>
-                      <option value="APPROVED">Acceptée</option>
-                      <option value="REJECTED">Refusée</option>
-                    </select>
+                        {h}h
+                      </button>
+                    ))}
                   </div>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="1"
+                    max="60"
+                    value={profileForm.weeklyHours}
+                    onChange={(e) =>
+                      setProfileForm({ ...profileForm, weeklyHours: e.target.value })
+                    }
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  />
                 </div>
+              )}
 
-                <div className="space-y-3">
-                  {leaveRequests
-                    .filter((req) => canManageTeam || req.userId === activeUser?.id)
-                    .filter((req) =>
-                      canManageTeam && leaveMemberFilter !== 'ALL'
-                        ? req.userId === leaveMemberFilter
-                        : true
-                    )
-                    .filter((req) =>
-                      leaveStatusFilter === 'ALL' ? true : req.status === leaveStatusFilter
-                    )
-                    .map((req) => {
-                      const requester = users.find((u) => u.id === req.userId);
-                      const statusMeta = DAY_STATUSES[req.type] || DAY_STATUSES.CP;
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsProfileModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
+                >
+                  Enregistrer mon compte
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
-                      return (
-                        <div
-                          key={req.id}
-                          className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                        >
-                          <div className="flex items-start gap-3.5">
-                            <span
-                              className={`w-9 h-9 rounded-full ${
-                                requester?.color || 'bg-slate-600'
-                              } text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5`}
-                            >
-                              {requester?.avatar || '??'}
-                            </span>
-                            <div className="space-y-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-bold text-sm text-slate-900">
-                                  {requester?.name || 'Collaborateur'}
-                                </span>
-                                <span
-                                  className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${statusMeta.badgeClass}`}
-                                >
-                                  {statusMeta.label}
-                                </span>
-                                {req.status === 'PENDING' && (
-                                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
-                                    En attente de validation
-                                  </span>
-                                )}
-                                {req.status === 'APPROVED' && (
-                                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                                    Acceptée
-                                  </span>
-                                )}
-                                {req.status === 'REJECTED' && (
-                                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800">
-                                    Refusée
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="text-xs font-medium text-slate-700">
-                                Du{' '}
-                                {parseDateISO(req.startDate).toLocaleDateString('fr-FR', {
-                                  day: 'numeric',
-                                  month: 'long',
-                                  year: 'numeric',
-                                })}{' '}
-                                au{' '}
-                                {parseDateISO(req.endDate).toLocaleDateString('fr-FR', {
-                                  day: 'numeric',
-                                  month: 'long',
-                                  year: 'numeric',
-                                })}
-                              </div>
-
-                              {req.comment && (
-                                <p className="text-xs text-slate-500 italic">« {req.comment} »</p>
-                              )}
-                            </div>
-                          </div>
-
-                          {canManageTeam && (
-                            <div className="flex flex-wrap items-center gap-2 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => handleReviewLeaveRequest(req.id, 'APPROVED')}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
-                                  req.status === 'APPROVED'
-                                    ? 'bg-emerald-700 text-white ring-2 ring-emerald-300'
-                                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                                }`}
-                              >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                Accepter
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleReviewLeaveRequest(req.id, 'REJECTED')}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
-                                  req.status === 'REJECTED'
-                                    ? 'bg-rose-600 text-white border-rose-600 ring-2 ring-rose-200'
-                                    : 'bg-white hover:bg-rose-50 text-rose-600 border-rose-200'
-                                }`}
-                              >
-                                <XCircle className="w-3.5 h-3.5" />
-                                Refuser
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleReviewLeaveRequest(req.id, 'PENDING')}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
-                                  req.status === 'PENDING'
-                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
-                                    : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
-                                }`}
-                              >
-                                <Clock className="w-3.5 h-3.5" />
-                                En attente
-                              </button>
-                            </div>
-                          )}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
                         </div>
                       );
                     })}
