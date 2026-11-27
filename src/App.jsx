@@ -276,7 +276,7 @@ export default function App() {
   const [initWeeklyHours, setInitWeeklyHours] = useState(35);
   const [formError, setFormError] = useState('');
 
-  // Formulaire création de compte par RH ou Manager (Règle 1)
+  // Formulaire création de compte par RH ou Manager
   const [newMember, setNewMember] = useState({
     name: '',
     email: '',
@@ -293,7 +293,7 @@ export default function App() {
     isActive: true,
   });
 
-  // Formulaire création d'équipe / service (Règle 5 : RH uniquement)
+  // Formulaire création d'équipe / service (RH uniquement)
   const [newDepartment, setNewDepartment] = useState({
     name: '',
     managerId: '',
@@ -383,10 +383,6 @@ export default function App() {
   const isHR = normalizedRole === 'hr' || normalizedRole === 'rh';
   const canManageTeam = isManager || isHR;
 
-  // Règle 5 & 7 : Périmètre visible pour la feuille de temps
-  // - Collaborateur : uniquement lui-même (jamais les horaires d'un autre)
-  // - Manager : lui-même + collaborateurs des équipes dont il est manager
-  // - RH : tout le monde
   const visibleTimesheetUsers = useMemo(() => {
     if (!activeUser) return [];
     if (isHR) return users;
@@ -415,7 +411,6 @@ export default function App() {
     }
   }, [activeUser, canManageTeam, selectedTimesheetUserId, visibleTimesheetUsers]);
 
-  // Règle 7 : Un collaborateur ne voit JAMAIS les horaires d'un autre collaborateur
   const inspectedUser = useMemo(() => {
     if (!activeUser) return null;
     if (!canManageTeam) return activeUser;
@@ -427,7 +422,6 @@ export default function App() {
   const isForfaitJours = inspectedUser?.contractType === 'FORFAIT_JOURS';
   const isInitialSetup = users.length === 0;
 
-  // Connexion ou création du 1er compte administrateur (RH ou Manager)
   const handleLoginSubmit = (e) => {
     e.preventDefault();
     setFormError('');
@@ -439,7 +433,9 @@ export default function App() {
 
     if (isInitialSetup) {
       const isForfait = initContractType === 'FORFAIT_JOURS';
-      const parsedRate = isForfait ? 100 : Math.min(100, Math.max(10, Number(initWorkRate) || 100));
+      const parsedRate = isForfait
+        ? 100
+        : Math.min(100, Math.max(10, Number(initWorkRate) || 100));
       const parsedHours = isForfait ? 0 : Math.max(1, Number(initWeeklyHours) || 35);
       const displayName =
         initName.trim() ||
@@ -519,7 +515,6 @@ export default function App() {
     );
   };
 
-  // Règle 3 : Seule la RH peut supprimer définitivement une ligne de collaborateur
   const handleDeleteUser = (targetUserId) => {
     if (!isHR) {
       showToast('Seule la RH peut supprimer un collaborateur.', 'error');
@@ -548,7 +543,6 @@ export default function App() {
     showToast(`Collaborateur ${target?.name || ''} supprimé.`);
   };
 
-  // Règle 5 : Seule la RH peut créer un service et associer un manager à cette équipe
   const handleCreateDepartment = (e) => {
     e.preventDefault();
     if (!isHR) {
@@ -607,7 +601,6 @@ export default function App() {
     showToast(`Équipe "${dept?.name || ''}" supprimée.`);
   };
 
-  // Règle 1, 5 & 6 : Création de compte par RH ou Manager
   const handleAddTeamMember = (e) => {
     e.preventDefault();
     if (!canManageTeam) return;
@@ -622,7 +615,6 @@ export default function App() {
       return;
     }
 
-    // Seule la RH peut créer des comptes RH/Manager ou affecter une équipe (Règle 5)
     const effectiveRole = isHR ? newMember.role : 'collaborator';
     const effectiveDeptId = isHR ? newMember.departmentId || '' : '';
     const isForfait = newMember.contractType === 'FORFAIT_JOURS';
@@ -987,8 +979,6 @@ export default function App() {
     };
   }, [inspectedUser, timeLogs, currentWeekStart, getDayEntry, getHolidayName]);
 
-  // Règle 4 : Un collaborateur ne peut plus modifier ses horaires une fois validés.
-  // Seul le Manager ou la RH peut modifier ou déverrouiller.
   const handleUpdateTimeLog = (dateIso, field, value) => {
     if (!inspectedUser) return;
     const key = `${inspectedUser.id}_${dateIso}`;
@@ -1032,7 +1022,6 @@ export default function App() {
     }));
   };
 
-  // Validation / Déverrouillage de la feuille de temps (Règle 4)
   const handleToggleDayValidation = (dateIso, nextValidatedState) => {
     if (!inspectedUser) return;
     const existing = getDayEntry(inspectedUser.id, dateIso);
@@ -1216,7 +1205,6 @@ export default function App() {
     );
   };
 
-  // Règle 3, 5 & 6 : Mise à jour des contrats, taux (mi-temps/temps partiel), activation/désactivation et équipes
   const handleUpdateUserContract = (userId, field, value) => {
     if (!isHR) {
       showToast('Seule la RH peut modifier les contrats, taux horaires et affectations.', 'error');
@@ -1321,8 +1309,6 @@ export default function App() {
     });
   }, [calendarMonth, getHolidayName]);
 
-  // Règle 7 : Le calendrier partagé affiche toute l'équipe active (absences, congés, RTT, télétravail)
-  // sans jamais exposer les horaires pointés des autres collaborateurs.
   const filteredCalendarUsers = useMemo(() => {
     const baseList = users.filter((u) => {
       if (departmentFilter !== 'ALL' && u.departmentId !== departmentFilter) {
@@ -1342,7 +1328,6 @@ export default function App() {
     [leaveRequests]
   );
 
-  // --- ÉCRAN D'AUTHENTIFICATION (AUCUN SWITCH POUR LES COLLABORATEURS) ---
   if (!activeUser) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
@@ -1560,7 +1545,6 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Règle 2 : Aucun switch n'est présenté au collaborateur */}
               {isHR && (
                 <select
                   aria-label="Basculer vers un profil (RH uniquement)"
@@ -1707,7 +1691,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Règle 7 : Le sélecteur de feuille de temps n'est accessible qu'au Manager (son équipe) et à la RH (tous) */}
         {canManageTeam && activeTab === 'timesheet' && (
           <div className="bg-indigo-50/80 border border-indigo-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-sm text-indigo-950">
@@ -1894,7 +1877,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Barre navigation semaine + Validation verrouillable (Règle 4) */}
             <div className="bg-white rounded-2xl border border-slate-200/90 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-2xs">
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -2328,7 +2310,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Règle 7 : Calendrier partagé avec absences/congés/télétravail de toute l'équipe, sans horaires */}
         {activeTab === 'calendar' && (
           <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-6 space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -2780,10 +2761,8 @@ export default function App() {
           </div>
         )}
 
-        {/* Onglet administration RH & Création de comptes Manager */}
         {activeTab === 'team_settings' && canManageTeam && (
           <div className="space-y-6">
-            {/* Règle 5 : Seule la RH peut créer des équipes/services et associer un manager à chaque équipe */}
             {isHR && (
               <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -2902,7 +2881,6 @@ export default function App() {
               </section>
             )}
 
-            {/* Règle 1 & 6 : Création de compte par RH et Manager (avec temps partiel / mi-temps / taux / heures) */}
             <form
               onSubmit={handleAddTeamMember}
               className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4"
@@ -3027,7 +3005,7 @@ export default function App() {
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                       Base hebdomadaire (heures/semaine)
                     </label>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       {[17.5, 28, 35, 37, 39].map((hrsPreset) => (
                         <button
                           key={hrsPreset}
@@ -3119,7 +3097,6 @@ export default function App() {
               </div>
             </form>
 
-            {/* Règle 3, 5 & 6 : Tableau complet de gestion RH (visible et modifiable par la RH) */}
             {isHR && (
               <>
                 <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
@@ -3345,7 +3322,6 @@ export default function App() {
                                   </div>
                                 </td>
 
-                                {/* Règle 3 : Activer ou désactiver tout en gardant la ligne visible */}
                                 <td className="py-3.5 px-4 whitespace-nowrap">
                                   <button
                                     type="button"
@@ -3398,7 +3374,6 @@ export default function App() {
                                   </select>
                                 </td>
 
-                                {/* Règle 6 : Taux (%) + heures (mi-temps, temps partiel, 35h, 37h, 39h) */}
                                 <td className="py-3.5 px-4">
                                   {isUserForfait ? (
                                     <span className="text-xs text-slate-400 italic">
@@ -3542,7 +3517,6 @@ export default function App() {
                                   </div>
                                 </td>
 
-                                {/* Règle 3 : Suppression de ligne collaborateur par la RH */}
                                 <td className="py-3.5 px-4 text-right whitespace-nowrap">
                                   {isSelf ? (
                                     <span className="text-xs text-slate-400 italic">
