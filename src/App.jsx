@@ -23,16 +23,20 @@ import {
   Mail,
   UserPlus,
   Users,
+  Lock,
+  Unlock,
+  LogOut,
+  Trash2,
 } from 'lucide-react';
 
-// --- CLÉS DE STOCKAGE LOCAL (SANS SUPABASE) ---
+// --- CLÉS DE STOCKAGE LOCAL ---
 const STORAGE_KEYS = {
-  USERS: 'tempoteam_local_users_v1',
-  DEPARTMENTS: 'tempoteam_local_departments_v1',
-  ACTIVE_USER_ID: 'tempoteam_local_active_user_v1',
-  TIME_LOGS: 'tempoteam_local_time_logs_v1',
-  LEAVE_REQUESTS: 'tempoteam_local_leave_requests_v1',
-  ALSACE_MOSELLE: 'tempoteam_local_alsace_moselle_v1',
+  USERS: 'tempoteam_local_users_v2',
+  DEPARTMENTS: 'tempoteam_local_departments_v2',
+  ACTIVE_USER_ID: 'tempoteam_local_active_user_v2',
+  TIME_LOGS: 'tempoteam_local_time_logs_v2',
+  LEAVE_REQUESTS: 'tempoteam_local_leave_requests_v2',
+  ALSACE_MOSELLE: 'tempoteam_local_alsace_moselle_v2',
 };
 
 const AVATAR_COLORS = [
@@ -263,16 +267,16 @@ export default function App() {
     }
   });
 
-  // Écran d'accès / création initial
-  const [quickEmail, setQuickEmail] = useState('');
-  const [quickName, setQuickName] = useState('');
-  const [quickRole, setQuickRole] = useState('manager');
-  const [quickContractType, setQuickContractType] = useState('FORFAIT_JOURS');
-  const [quickWeeklyHours, setQuickWeeklyHours] = useState(35);
+  // Écran de connexion / initialisation
+  const [loginEmail, setLoginEmail] = useState('');
+  const [initName, setInitName] = useState('');
+  const [initRole, setInitRole] = useState('hr');
+  const [initContractType, setInitContractType] = useState('FORFAIT_JOURS');
+  const [initWorkRate, setInitWorkRate] = useState(100);
+  const [initWeeklyHours, setInitWeeklyHours] = useState(35);
   const [formError, setFormError] = useState('');
-  const [accountActionMode, setAccountActionMode] = useState('OPEN_EXISTING');
 
-  // Formulaire ajout collaborateur
+  // Formulaire création de compte par RH ou Manager (Règle 1)
   const [newMember, setNewMember] = useState({
     name: '',
     email: '',
@@ -280,6 +284,7 @@ export default function App() {
     role: 'collaborator',
     departmentId: '',
     contractType: 'HOURLY',
+    workRate: 100,
     weeklyHours: 35,
     annualRttQuota: 12,
     annualCpQuota: 25,
@@ -288,7 +293,7 @@ export default function App() {
     isActive: true,
   });
 
-  // Formulaire création service
+  // Formulaire création d'équipe / service (Règle 5 : RH uniquement)
   const [newDepartment, setNewDepartment] = useState({
     name: '',
     managerId: '',
@@ -378,114 +383,121 @@ export default function App() {
   const isHR = normalizedRole === 'hr' || normalizedRole === 'rh';
   const canManageTeam = isManager || isHR;
 
-  const visibleUsers = useMemo(() => {
+  // Règle 5 & 7 : Périmètre visible pour la feuille de temps
+  // - Collaborateur : uniquement lui-même (jamais les horaires d'un autre)
+  // - Manager : lui-même + collaborateurs des équipes dont il est manager
+  // - RH : tout le monde
+  const visibleTimesheetUsers = useMemo(() => {
     if (!activeUser) return [];
     if (isHR) return users;
     if (isManager) {
       const managedDeptIds = departments
         .filter((d) => d.managerId === activeUser.id)
         .map((d) => d.id);
-      const hasManagedDept = managedDeptIds.length > 0;
-      const scoped = users.filter(
+      return users.filter(
         (u) =>
           u.id === activeUser.id ||
-          (u.departmentId && managedDeptIds.includes(u.departmentId)) ||
-          (!hasManagedDept && u.role === 'collaborator')
+          (u.departmentId && managedDeptIds.includes(u.departmentId))
       );
-      return scoped.length > 0 ? scoped : users;
     }
-    return users.filter((u) => u.id === activeUser.id);
+    return [activeUser];
   }, [activeUser, isHR, isManager, users, departments]);
 
   useEffect(() => {
-    if (activeUser && !selectedTimesheetUserId) {
+    if (!activeUser) return;
+    if (!canManageTeam) {
+      setSelectedTimesheetUserId(activeUser.id);
+    } else if (
+      !selectedTimesheetUserId ||
+      !visibleTimesheetUsers.some((u) => u.id === selectedTimesheetUserId)
+    ) {
       setSelectedTimesheetUserId(activeUser.id);
     }
-  }, [activeUser, selectedTimesheetUserId]);
+  }, [activeUser, canManageTeam, selectedTimesheetUserId, visibleTimesheetUsers]);
 
+  // Règle 7 : Un collaborateur ne voit JAMAIS les horaires d'un autre collaborateur
   const inspectedUser = useMemo(() => {
     if (!activeUser) return null;
     if (!canManageTeam) return activeUser;
     return (
-      visibleUsers.find((u) => u.id === selectedTimesheetUserId) ||
-      users.find((u) => u.id === selectedTimesheetUserId) ||
-      activeUser
+      visibleTimesheetUsers.find((u) => u.id === selectedTimesheetUserId) || activeUser
     );
-  }, [canManageTeam, activeUser, visibleUsers, users, selectedTimesheetUserId]);
+  }, [canManageTeam, activeUser, visibleTimesheetUsers, selectedTimesheetUserId]);
 
   const isForfaitJours = inspectedUser?.contractType === 'FORFAIT_JOURS';
-  const canBootstrapInitialProfile = users.length === 0;
+  const isInitialSetup = users.length === 0;
 
-  const handleCreateOrSwitchByEmail = (e) => {
+  // Connexion ou création du 1er compte administrateur (RH ou Manager)
+  const handleLoginSubmit = (e) => {
     e.preventDefault();
     setFormError('');
-    const normalizedEmail = quickEmail.trim().toLowerCase();
+    const normalizedEmail = loginEmail.trim().toLowerCase();
     if (!normalizedEmail || !normalizedEmail.includes('@')) {
       setFormError('Veuillez saisir une adresse email valide.');
       return;
     }
 
-    const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
-    if (existing) {
-      if (existing.isActive === false) {
-        setFormError(
-          'Ce compte est désactivé (date de sortie renseignée ou compte inactif). Contactez votre Manager ou la RH.'
-        );
-        return;
-      }
-      setCurrentUserId(existing.id);
-      setSelectedTimesheetUserId(existing.id);
-      setQuickEmail('');
-      setQuickName('');
-      showToast(`Session ouverte pour ${existing.name}.`);
+    if (isInitialSetup) {
+      const isForfait = initContractType === 'FORFAIT_JOURS';
+      const parsedRate = isForfait ? 100 : Math.min(100, Math.max(10, Number(initWorkRate) || 100));
+      const parsedHours = isForfait ? 0 : Math.max(1, Number(initWeeklyHours) || 35);
+      const displayName =
+        initName.trim() ||
+        normalizedEmail
+          .split('@')[0]
+          .replace(/[._-]+/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase());
+
+      const firstUser = {
+        id: `user-${Date.now()}`,
+        email: normalizedEmail,
+        name: displayName,
+        role: initRole,
+        departmentId: '',
+        contractType: initContractType,
+        jobTitle: initRole === 'hr' ? 'Responsable RH' : 'Manager',
+        avatar: buildInitials(displayName),
+        color: AVATAR_COLORS[0],
+        workRate: parsedRate,
+        weeklyHours: parsedHours,
+        dailyHours: isForfait ? 0 : Number((parsedHours / 5).toFixed(2)),
+        initialBalanceMinutes: 0,
+        annualRttQuota: isForfait ? 12 : 0,
+        annualCpQuota: 25,
+        entryDate: formatDateISO(new Date()),
+        exitDate: '',
+        isActive: true,
+      };
+
+      setUsers([firstUser]);
+      setCurrentUserId(firstUser.id);
+      setSelectedTimesheetUserId(firstUser.id);
+      setLoginEmail('');
+      setInitName('');
+      showToast(`Compte ${firstUser.name} initialisé.`);
       return;
     }
 
-    if (users.length > 0 && accountActionMode === 'OPEN_EXISTING') {
+    const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
+    if (!existing) {
       setFormError(
-        'Aucun compte trouvé avec cet email. Choisissez "Créer mon profil collaborateur" ou demandez au Manager / à la RH.'
+        'Aucun compte associé à cet email. Seuls la RH et le Manager peuvent créer un compte.'
       );
       return;
     }
 
-    const isForfait = quickContractType === 'FORFAIT_JOURS';
-    const parsedHours = isForfait ? 0 : Math.max(1, Number(quickWeeklyHours) || 35);
-    const displayName =
-      quickName.trim() ||
-      normalizedEmail
-        .split('@')[0]
-        .replace(/[._-]+/g, ' ')
-        .replace(/\b\w/g, (c) => c.toUpperCase());
+    if (existing.isActive === false) {
+      setFormError(
+        'Ce compte est désactivé. Contactez le service RH pour toute question.'
+      );
+      return;
+    }
 
-    const assignedRole = users.length === 0 ? quickRole : 'collaborator';
-
-    const newProfile = {
-      id: `user-${Date.now()}`,
-      email: normalizedEmail,
-      name: displayName,
-      role: assignedRole,
-      departmentId: '',
-      contractType: quickContractType,
-      jobTitle:
-        assignedRole === 'manager' ? 'Manager' : assignedRole === 'hr' ? 'RH' : 'Collaborateur',
-      avatar: buildInitials(displayName),
-      color: AVATAR_COLORS[users.length % AVATAR_COLORS.length],
-      weeklyHours: parsedHours,
-      dailyHours: isForfait ? 0 : Number((parsedHours / 5).toFixed(2)),
-      initialBalanceMinutes: 0,
-      annualRttQuota: isForfait ? 12 : 0,
-      annualCpQuota: 25,
-      entryDate: formatDateISO(new Date()),
-      exitDate: '',
-      isActive: true,
-    };
-
-    setUsers((prev) => [...prev, newProfile]);
-    setCurrentUserId(newProfile.id);
-    setSelectedTimesheetUserId(newProfile.id);
-    setQuickEmail('');
-    setQuickName('');
-    showToast(`Profil créé pour ${newProfile.name}.`);
+    setCurrentUserId(existing.id);
+    setSelectedTimesheetUserId(existing.id);
+    setActiveTab('timesheet');
+    setLoginEmail('');
+    showToast(`Bienvenue ${existing.name}.`);
   };
 
   const handleUpdateOwnProfile = (field, value) => {
@@ -507,13 +519,14 @@ export default function App() {
     );
   };
 
+  // Règle 3 : Seule la RH peut supprimer définitivement une ligne de collaborateur
   const handleDeleteUser = (targetUserId) => {
-    if (!canManageTeam) {
-      showToast('Seuls le Manager et la RH peuvent supprimer un collaborateur.', 'error');
+    if (!isHR) {
+      showToast('Seule la RH peut supprimer un collaborateur.', 'error');
       return;
     }
     if (targetUserId === activeUser?.id) {
-      showToast('Vous ne pouvez pas supprimer votre propre session active.', 'error');
+      showToast('Vous ne pouvez pas supprimer votre propre compte actif.', 'error');
       return;
     }
     const target = users.find((u) => u.id === targetUserId);
@@ -532,37 +545,34 @@ export default function App() {
     if (selectedTimesheetUserId === targetUserId) {
       setSelectedTimesheetUserId(activeUser.id);
     }
-    showToast(`Profil ${target?.name || ''} supprimé.`);
+    showToast(`Collaborateur ${target?.name || ''} supprimé.`);
   };
 
+  // Règle 5 : Seule la RH peut créer un service et associer un manager à cette équipe
   const handleCreateDepartment = (e) => {
     e.preventDefault();
-    if (!canManageTeam) {
-      showToast('Seuls le Manager et la RH peuvent créer un service.', 'error');
+    if (!isHR) {
+      showToast('Seule la RH peut créer une équipe et lui associer un manager.', 'error');
       return;
     }
     const cleanName = newDepartment.name.trim();
     if (!cleanName) {
-      showToast('Veuillez saisir le nom du service.', 'error');
+      showToast('Veuillez saisir le nom de l’équipe / du service.', 'error');
       return;
     }
-
-    const defaultManagerId =
-      newDepartment.managerId ||
-      (isManager ? activeUser.id : users.find((u) => u.role === 'manager')?.id || '');
 
     const createdDept = {
       id: `dept-${Date.now()}`,
       name: cleanName,
-      managerId: defaultManagerId,
+      managerId: newDepartment.managerId || '',
     };
 
     setDepartments((prev) => [...prev, createdDept]);
 
-    if (defaultManagerId) {
+    if (createdDept.managerId) {
       setUsers((prev) =>
         prev.map((u) =>
-          u.id === defaultManagerId && !u.departmentId
+          u.id === createdDept.managerId && !u.departmentId
             ? { ...u, departmentId: createdDept.id }
             : u
         )
@@ -570,27 +580,34 @@ export default function App() {
     }
 
     setNewDepartment({ name: '', managerId: '' });
-    showToast(`Service "${createdDept.name}" créé.`);
+    showToast(`Équipe "${createdDept.name}" créée.`);
   };
 
   const handleUpdateDepartment = (deptId, field, value) => {
-    if (!canManageTeam) return;
+    if (!isHR) {
+      showToast('Seule la RH peut modifier les équipes.', 'error');
+      return;
+    }
     setDepartments((prev) =>
       prev.map((d) => (d.id === deptId ? { ...d, [field]: value } : d))
     );
-    showToast('Service mis à jour.');
+    showToast('Équipe mise à jour.');
   };
 
   const handleDeleteDepartment = (deptId) => {
-    if (!canManageTeam) return;
+    if (!isHR) {
+      showToast('Seule la RH peut supprimer une équipe.', 'error');
+      return;
+    }
     const dept = departments.find((d) => d.id === deptId);
     setDepartments((prev) => prev.filter((d) => d.id !== deptId));
     setUsers((prev) =>
       prev.map((u) => (u.departmentId === deptId ? { ...u, departmentId: '' } : u))
     );
-    showToast(`Service "${dept?.name || ''}" supprimé.`);
+    showToast(`Équipe "${dept?.name || ''}" supprimée.`);
   };
 
+  // Règle 1, 5 & 6 : Création de compte par RH ou Manager
   const handleAddTeamMember = (e) => {
     e.preventDefault();
     if (!canManageTeam) return;
@@ -601,24 +618,40 @@ export default function App() {
       return;
     }
     if (users.some((u) => u.email.toLowerCase() === normalizedEmail)) {
-      showToast('Un profil existe déjà avec cette adresse email.', 'error');
+      showToast('Un compte existe déjà avec cette adresse email.', 'error');
       return;
     }
 
+    // Seule la RH peut créer des comptes RH/Manager ou affecter une équipe (Règle 5)
+    const effectiveRole = isHR ? newMember.role : 'collaborator';
+    const effectiveDeptId = isHR ? newMember.departmentId || '' : '';
     const isForfait = newMember.contractType === 'FORFAIT_JOURS';
-    const parsedHours = isForfait ? 0 : Math.max(1, Number(newMember.weeklyHours) || 35);
+    const effectiveRate = isForfait
+      ? 100
+      : Math.min(100, Math.max(10, Number(newMember.workRate) || 100));
+    const effectiveHours = isForfait
+      ? 0
+      : Math.max(1, Number(newMember.weeklyHours) || 35);
+
     const created = {
       id: `user-${Date.now()}`,
       email: normalizedEmail,
       name: cleanName,
-      role: newMember.role,
-      departmentId: newMember.departmentId || '',
+      role: effectiveRole,
+      departmentId: effectiveDeptId,
       contractType: newMember.contractType,
-      jobTitle: newMember.jobTitle.trim() || 'Collaborateur',
+      jobTitle:
+        newMember.jobTitle.trim() ||
+        (effectiveRole === 'manager'
+          ? 'Manager'
+          : effectiveRole === 'hr'
+          ? 'RH'
+          : 'Collaborateur'),
       avatar: buildInitials(cleanName),
       color: AVATAR_COLORS[users.length % AVATAR_COLORS.length],
-      weeklyHours: parsedHours,
-      dailyHours: isForfait ? 0 : Number((parsedHours / 5).toFixed(2)),
+      workRate: effectiveRate,
+      weeklyHours: effectiveHours,
+      dailyHours: isForfait ? 0 : Number((effectiveHours / 5).toFixed(2)),
       initialBalanceMinutes: 0,
       annualRttQuota: isForfait ? Number(newMember.annualRttQuota) || 12 : 0,
       annualCpQuota: Number(newMember.annualCpQuota) || 25,
@@ -635,6 +668,7 @@ export default function App() {
       role: 'collaborator',
       departmentId: '',
       contractType: 'HOURLY',
+      workRate: 100,
       weeklyHours: 35,
       annualRttQuota: 12,
       annualCpQuota: 25,
@@ -642,11 +676,13 @@ export default function App() {
       exitDate: '',
       isActive: true,
     });
-    showToast(`Profil ${created.name} ajouté avec succès.`);
+    showToast(`Compte créé pour ${created.name}.`);
   };
 
   const handleLogout = () => {
     setCurrentUserId(null);
+    setSelectedTimesheetUserId(null);
+    setActiveTab('timesheet');
   };
 
   const getHolidayName = useCallback(
@@ -714,9 +750,13 @@ export default function App() {
             morningEnd: '',
             afternoonStart: '',
             afternoonEnd: '',
+            isValidated: Boolean(timeLogs[key].isValidated),
           };
         }
-        return timeLogs[key];
+        return {
+          ...timeLogs[key],
+          isValidated: Boolean(timeLogs[key].isValidated),
+        };
       }
       if (holidayName) {
         return {
@@ -726,6 +766,7 @@ export default function App() {
           morningEnd: '',
           afternoonStart: '',
           afternoonEnd: '',
+          isValidated: false,
         };
       }
       return {
@@ -735,10 +776,16 @@ export default function App() {
         morningEnd: '',
         afternoonStart: '',
         afternoonEnd: '',
+        isValidated: false,
       };
     },
     [timeLogs, getHolidayName]
   );
+
+  const isWeekFullyValidated = useMemo(() => {
+    if (!inspectedUser) return false;
+    return weekDays.every((day) => getDayEntry(inspectedUser.id, day.iso).isValidated);
+  }, [inspectedUser, weekDays, getDayEntry]);
 
   const currentWeekStats = useMemo(() => {
     if (!inspectedUser) {
@@ -940,10 +987,21 @@ export default function App() {
     };
   }, [inspectedUser, timeLogs, currentWeekStart, getDayEntry, getHolidayName]);
 
+  // Règle 4 : Un collaborateur ne peut plus modifier ses horaires une fois validés.
+  // Seul le Manager ou la RH peut modifier ou déverrouiller.
   const handleUpdateTimeLog = (dateIso, field, value) => {
     if (!inspectedUser) return;
     const key = `${inspectedUser.id}_${dateIso}`;
     const existing = getDayEntry(inspectedUser.id, dateIso);
+
+    if (existing.isValidated && !canManageTeam) {
+      showToast(
+        'Ces horaires sont validés et verrouillés. Seul votre Manager ou la RH peut les modifier.',
+        'error'
+      );
+      return;
+    }
+
     const updated = { ...existing, [field]: value };
 
     if (field === 'status') {
@@ -974,13 +1032,69 @@ export default function App() {
     }));
   };
 
+  // Validation / Déverrouillage de la feuille de temps (Règle 4)
+  const handleToggleDayValidation = (dateIso, nextValidatedState) => {
+    if (!inspectedUser) return;
+    const existing = getDayEntry(inspectedUser.id, dateIso);
+    if (existing.isValidated && !nextValidatedState && !canManageTeam) {
+      showToast('Seul le Manager ou la RH peut déverrouiller une journée validée.', 'error');
+      return;
+    }
+
+    const key = `${inspectedUser.id}_${dateIso}`;
+    setTimeLogs((prev) => ({
+      ...prev,
+      [key]: {
+        ...existing,
+        isValidated: nextValidatedState,
+      },
+    }));
+    showToast(
+      nextValidatedState
+        ? 'Journée validée et verrouillée.'
+        : 'Journée déverrouillée par le Manager / la RH.'
+    );
+  };
+
+  const handleToggleWeekValidation = (nextValidatedState) => {
+    if (!inspectedUser) return;
+    if (!nextValidatedState && !canManageTeam) {
+      showToast('Seul le Manager ou la RH peut déverrouiller une semaine validée.', 'error');
+      return;
+    }
+
+    setTimeLogs((prev) => {
+      const next = { ...prev };
+      weekDays.forEach((day) => {
+        const existing = getDayEntry(inspectedUser.id, day.iso);
+        next[`${inspectedUser.id}_${day.iso}`] = {
+          ...existing,
+          isValidated: nextValidatedState,
+        };
+      });
+      return next;
+    });
+
+    showToast(
+      nextValidatedState
+        ? 'Semaine validée et verrouillée. Seul le Manager ou la RH peut désormais la modifier.'
+        : 'Semaine déverrouillée.'
+    );
+  };
+
   const handleAutoFillStandardDay = (dateIso) => {
     if (!inspectedUser) return;
     const key = `${inspectedUser.id}_${dateIso}`;
     const existing = getDayEntry(inspectedUser.id, dateIso);
 
+    if (existing.isValidated && !canManageTeam) {
+      showToast('Cette journée est validée et verrouillée.', 'error');
+      return;
+    }
+
     if (inspectedUser.contractType === 'FORFAIT_JOURS') {
       const updated = {
+        ...existing,
         status: 'WORKED',
         isRemote: false,
         morningStart: '',
@@ -995,6 +1109,7 @@ export default function App() {
 
     const is39h = inspectedUser.weeklyHours >= 39;
     const updated = {
+      ...existing,
       status: 'WORKED',
       isRemote: existing.isRemote || false,
       morningStart: is39h ? '08:30' : '09:00',
@@ -1057,8 +1172,8 @@ export default function App() {
         const dayOfWeek = curr.getDay();
         const iso = formatDateISO(curr);
         if (dayOfWeek !== 0 && dayOfWeek !== 6 && !getHolidayName(iso)) {
+          const existing = updatedLogs[`${targetReq.userId}_${iso}`] || {};
           if (targetReq.type === 'REMOTE') {
-            const existing = updatedLogs[`${targetReq.userId}_${iso}`] || {};
             updatedLogs[`${targetReq.userId}_${iso}`] = {
               ...existing,
               status: targetUser?.contractType === 'FORFAIT_JOURS' ? 'REMOTE' : 'WORKED',
@@ -1070,6 +1185,7 @@ export default function App() {
             };
           } else {
             updatedLogs[`${targetReq.userId}_${iso}`] = {
+              ...existing,
               status: targetReq.type,
               isRemote: false,
               morningStart: '',
@@ -1083,7 +1199,7 @@ export default function App() {
       }
 
       setTimeLogs(updatedLogs);
-      showToast('Demande acceptée ! Le planning et la feuille de temps sont mis à jour.');
+      showToast('Demande acceptée ! Le calendrier partagé et la feuille de temps sont à jour.');
     } else if (decision === 'REJECTED') {
       showToast('Demande refusée.', 'info');
     } else {
@@ -1100,8 +1216,12 @@ export default function App() {
     );
   };
 
+  // Règle 3, 5 & 6 : Mise à jour des contrats, taux (mi-temps/temps partiel), activation/désactivation et équipes
   const handleUpdateUserContract = (userId, field, value) => {
-    if (!canManageTeam) return;
+    if (!isHR) {
+      showToast('Seule la RH peut modifier les contrats, taux horaires et affectations.', 'error');
+      return;
+    }
     const target = users.find((u) => u.id === userId);
     if (!target) return;
 
@@ -1109,11 +1229,17 @@ export default function App() {
 
     if (field === 'contractType') {
       const isForfait = value === 'FORFAIT_JOURS';
-      const newWeekly = isForfait ? 0 : target.weeklyHours > 0 ? target.weeklyHours : 35;
+      const newRate = isForfait ? 100 : target.workRate || 100;
+      const newWeekly = isForfait
+        ? 0
+        : target.weeklyHours > 0
+        ? target.weeklyHours
+        : Number(((35 * newRate) / 100).toFixed(2));
       const newDaily = isForfait ? 0 : Number((newWeekly / 5).toFixed(2));
       const newRtt = isForfait ? target.annualRttQuota || 12 : 0;
       updatedFields = {
         contractType: value,
+        workRate: newRate,
         weeklyHours: newWeekly,
         dailyHours: newDaily,
         annualRttQuota: newRtt,
@@ -1143,13 +1269,23 @@ export default function App() {
       const numVal = parseFloat(value);
       if (isNaN(numVal)) return;
 
-      if (field === 'weeklyHours') {
-        const safeHours = Math.max(1, numVal);
-        const newDaily = Number((safeHours / 5).toFixed(2));
+      if (field === 'workRate') {
+        const clampedRate = Math.min(100, Math.max(10, numVal));
+        const computedHours = Number(((35 * clampedRate) / 100).toFixed(2));
         updatedFields = {
           contractType: 'HOURLY',
+          workRate: clampedRate,
+          weeklyHours: computedHours,
+          dailyHours: Number((computedHours / 5).toFixed(2)),
+        };
+      } else if (field === 'weeklyHours') {
+        const safeHours = Math.max(1, numVal);
+        const computedRate = Math.min(100, Math.round((safeHours / 35) * 100));
+        updatedFields = {
+          contractType: 'HOURLY',
+          workRate: computedRate,
           weeklyHours: safeHours,
-          dailyHours: newDaily,
+          dailyHours: Number((safeHours / 5).toFixed(2)),
         };
       } else if (field === 'initialBalanceMinutes') {
         updatedFields = { initialBalanceMinutes: Math.round(numVal) };
@@ -1185,25 +1321,28 @@ export default function App() {
     });
   }, [calendarMonth, getHolidayName]);
 
+  // Règle 7 : Le calendrier partagé affiche toute l'équipe active (absences, congés, RTT, télétravail)
+  // sans jamais exposer les horaires pointés des autres collaborateurs.
   const filteredCalendarUsers = useMemo(() => {
     const baseList = users.filter((u) => {
       if (departmentFilter !== 'ALL' && u.departmentId !== departmentFilter) {
         return false;
       }
       if (u.isActive === false) {
-        return calendarUserFilter === u.id || calendarStatusFilter !== 'ALL';
+        return calendarUserFilter === u.id;
       }
       return true;
     });
     if (calendarUserFilter === 'ALL') return baseList;
     return baseList.filter((u) => u.id === calendarUserFilter);
-  }, [users, departmentFilter, calendarUserFilter, calendarStatusFilter]);
+  }, [users, departmentFilter, calendarUserFilter]);
 
   const pendingRequestsCount = useMemo(
     () => leaveRequests.filter((r) => r.status === 'PENDING').length,
     [leaveRequests]
   );
 
+  // --- ÉCRAN D'AUTHENTIFICATION (AUCUN SWITCH POUR LES COLLABORATEURS) ---
   if (!activeUser) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
@@ -1214,46 +1353,13 @@ export default function App() {
             </div>
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">TempoTeam</h1>
             <p className="text-xs text-slate-500">
-              {canBootstrapInitialProfile
-                ? 'Créez votre premier profil (Manager ou RH) pour démarrer la gestion de l’équipe.'
-                : 'Saisissez votre adresse email enregistrée pour accéder à votre espace.'}
+              {isInitialSetup
+                ? 'Initialisation : créez le compte administrateur (RH ou Manager) pour démarrer.'
+                : 'Connectez-vous avec l’adresse email créée par votre RH ou votre Manager.'}
             </p>
           </div>
 
-          <form onSubmit={handleCreateOrSwitchByEmail} className="space-y-3.5">
-            {!canBootstrapInitialProfile && (
-              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-100 text-xs font-semibold">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccountActionMode('OPEN_EXISTING');
-                    setFormError('');
-                  }}
-                  className={`py-1.5 rounded-lg transition-colors ${
-                    accountActionMode === 'OPEN_EXISTING'
-                      ? 'bg-white text-slate-900 shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Ouvrir mon compte
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccountActionMode('CREATE');
-                    setFormError('');
-                  }}
-                  className={`py-1.5 rounded-lg transition-colors ${
-                    accountActionMode === 'CREATE'
-                      ? 'bg-white text-slate-900 shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Créer mon profil collaborateur
-                </button>
-              </div>
-            )}
-
+          <form onSubmit={handleLoginSubmit} className="space-y-3.5">
             {formError && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1263,22 +1369,22 @@ export default function App() {
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Adresse email *
+                Adresse email professionnelle *
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="email"
                   required
-                  value={quickEmail}
-                  onChange={(e) => setQuickEmail(e.target.value)}
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
                   placeholder="prenom.nom@entreprise.fr"
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
                 />
               </div>
             </div>
 
-            {(canBootstrapInitialProfile || accountActionMode === 'CREATE') && (
+            {isInitialSetup && (
               <>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -1286,42 +1392,39 @@ export default function App() {
                   </label>
                   <input
                     type="text"
-                    value={quickName}
-                    onChange={(e) => setQuickName(e.target.value)}
+                    value={initName}
+                    onChange={(e) => setInitName(e.target.value)}
                     placeholder="Prénom Nom"
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {canBootstrapInitialProfile && (
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Rôle initial
-                      </label>
-                      <select
-                        value={quickRole}
-                        onChange={(e) => setQuickRole(e.target.value)}
-                        className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
-                      >
-                        <option value="manager">Manager</option>
-                        <option value="hr">RH</option>
-                        <option value="collaborator">Collaborateur</option>
-                      </select>
-                    </div>
-                  )}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Rôle
+                    </label>
+                    <select
+                      value={initRole}
+                      onChange={(e) => setInitRole(e.target.value)}
+                      className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                    >
+                      <option value="hr">RH</option>
+                      <option value="manager">Manager</option>
+                    </select>
+                  </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Contrat
+                      Statut / Contrat
                     </label>
                     <select
-                      value={quickContractType}
-                      onChange={(e) => setQuickContractType(e.target.value)}
+                      value={initContractType}
+                      onChange={(e) => setInitContractType(e.target.value)}
                       className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
                     >
                       <option value="FORFAIT_JOURS">Cadre Forfait Jours</option>
-                      <option value="HOURLY">Taux horaire</option>
+                      <option value="HOURLY">Contrat Horaire</option>
                     </select>
                   </div>
 
@@ -1334,10 +1437,14 @@ export default function App() {
                       min="1"
                       max="60"
                       step="0.5"
-                      disabled={quickContractType === 'FORFAIT_JOURS'}
-                      value={quickContractType === 'FORFAIT_JOURS' ? '' : quickWeeklyHours}
-                      onChange={(e) => setQuickWeeklyHours(e.target.value)}
-                      placeholder={quickContractType === 'FORFAIT_JOURS' ? 'Forfait' : '35'}
+                      disabled={initContractType === 'FORFAIT_JOURS'}
+                      value={initContractType === 'FORFAIT_JOURS' ? '' : initWeeklyHours}
+                      onChange={(e) => {
+                        const h = Number(e.target.value) || 35;
+                        setInitWeeklyHours(h);
+                        setInitWorkRate(Math.min(100, Math.round((h / 35) * 100)));
+                      }}
+                      placeholder={initContractType === 'FORFAIT_JOURS' ? 'Forfait' : '35'}
                       className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-sm disabled:bg-slate-100"
                     />
                   </div>
@@ -1349,13 +1456,16 @@ export default function App() {
               type="submit"
               className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors"
             >
-              {canBootstrapInitialProfile
-                ? 'Créer mon profil et démarrer'
-                : accountActionMode === 'CREATE'
-                ? 'Créer mon profil collaborateur'
-                : 'Accéder à mon espace'}
+              {isInitialSetup ? 'Créer le compte administrateur et démarrer' : 'Se connecter'}
             </button>
           </form>
+
+          {!isInitialSetup && (
+            <p className="text-[11px] text-center text-slate-400">
+              Pour des raisons de sécurité, aucun profil n’est affiché publiquement : la création des
+              comptes est réservée à la RH et aux Managers.
+            </p>
+          )}
         </div>
       </div>
     );
@@ -1385,11 +1495,11 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-bold tracking-tight text-slate-900">TempoTeam</h1>
                   <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    Mode Local
+                    {isHR ? 'Espace RH' : isManager ? 'Espace Manager' : 'Espace Collaborateur'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500">
-                  Gestion des temps, compteurs et planning d’équipe
+                  Gestion des temps, validations et calendrier partagé d’équipe
                 </p>
               </div>
             </div>
@@ -1446,13 +1556,14 @@ export default function App() {
               <div className="px-3 py-1.5 rounded-xl bg-slate-100 text-xs font-bold text-slate-900 border border-slate-200">
                 <span>{activeUser.name}</span>
                 <span className="text-slate-500 font-medium ml-1.5">
-                  ({isManager ? 'Manager' : isHR ? 'RH' : 'Collaborateur'})
+                  ({isHR ? 'RH' : isManager ? 'Manager' : 'Collaborateur'})
                 </span>
               </div>
 
-              {canManageTeam && (
+              {/* Règle 2 : Aucun switch n'est présenté au collaborateur */}
+              {isHR && (
                 <select
-                  aria-label="Basculer vers un profil (Manager et RH uniquement)"
+                  aria-label="Basculer vers un profil (RH uniquement)"
                   value={activeUser.id}
                   onChange={(e) => {
                     setCurrentUserId(e.target.value);
@@ -1462,11 +1573,11 @@ export default function App() {
                 >
                   {users.map((u) => (
                     <option key={u.id} value={u.id}>
-                      Switch : {u.name} {u.isActive === false ? '(Désactivé)' : ''} —{' '}
-                      {u.role === 'manager'
-                        ? 'Manager'
-                        : u.role === 'hr'
+                      Vue compte : {u.name} {u.isActive === false ? '(Désactivé)' : ''} —{' '}
+                      {u.role === 'hr'
                         ? 'RH'
+                        : u.role === 'manager'
+                        ? 'Manager'
                         : 'Collaborateur'}
                     </option>
                   ))}
@@ -1476,11 +1587,11 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleLogout}
-                title="Fermer ma session"
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
+                title="Se déconnecter"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-rose-50 text-xs font-semibold text-slate-700 hover:text-rose-700 hover:border-rose-200 transition-colors"
               >
-                <UserPlus className="w-4 h-4" />
-                <span>Changer de session</span>
+                <LogOut className="w-4 h-4" />
+                <span>Déconnexion</span>
               </button>
             </div>
           </div>
@@ -1496,7 +1607,7 @@ export default function App() {
               }`}
             >
               <Clock className="w-4 h-4" />
-              <span>Feuille de temps</span>
+              <span>{canManageTeam ? 'Feuilles de temps' : 'Ma feuille de temps'}</span>
             </button>
 
             <button
@@ -1509,7 +1620,7 @@ export default function App() {
               }`}
             >
               <CalendarIcon className="w-4 h-4" />
-              <span>Calendrier d’équipe</span>
+              <span>Calendrier partagé</span>
             </button>
 
             <button
@@ -1541,7 +1652,11 @@ export default function App() {
                 }`}
               >
                 <Users className="w-4 h-4" />
-                <span>Équipe, Contrats & Statuts</span>
+                <span>
+                  {isHR
+                    ? 'RH : Équipes, Contrats & Comptes'
+                    : 'Création de comptes collaborateurs'}
+                </span>
               </button>
             )}
           </nav>
@@ -1559,7 +1674,7 @@ export default function App() {
             <div>
               <div className="text-xs font-bold text-slate-900">Mon profil</div>
               <div className="text-[11px] text-slate-500">
-                Modifiez directement vos informations personnelles (sauvegarde automatique)
+                Informations personnelles de votre session
               </div>
             </div>
           </div>
@@ -1592,20 +1707,21 @@ export default function App() {
           </div>
         </div>
 
+        {/* Règle 7 : Le sélecteur de feuille de temps n'est accessible qu'au Manager (son équipe) et à la RH (tous) */}
         {canManageTeam && activeTab === 'timesheet' && (
           <div className="bg-indigo-50/80 border border-indigo-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-sm text-indigo-950">
               <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
               <span>
-                Mode <strong>{isManager ? 'Manager' : 'RH'}</strong> actif :{' '}
+                Mode <strong>{isHR ? 'RH' : 'Manager'}</strong> :{' '}
                 {isHR
-                  ? 'vous avez accès à l’ensemble des services et collaborateurs.'
-                  : 'sélectionnez un collaborateur de votre périmètre pour consulter ou saisir sa feuille de temps.'}
+                  ? 'consultez, modifiez ou déverrouillez les horaires de tous les collaborateurs.'
+                  : 'consultez, modifiez ou déverrouillez les horaires des collaborateurs rattachés à vos équipes.'}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <label htmlFor="select-collab" className="text-xs font-semibold text-indigo-900">
-                Collaborateur :
+                Feuille de temps de :
               </label>
               <select
                 id="select-collab"
@@ -1613,14 +1729,14 @@ export default function App() {
                 onChange={(e) => setSelectedTimesheetUserId(e.target.value)}
                 className="bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
-                {visibleUsers.map((u) => {
+                {visibleTimesheetUsers.map((u) => {
                   const dept = departments.find((d) => d.id === u.departmentId);
                   return (
                     <option key={u.id} value={u.id}>
                       {u.name} {dept ? `[${dept.name}]` : ''} —{' '}
                       {u.contractType === 'FORFAIT_JOURS'
                         ? 'Cadre (Forfait Jours)'
-                        : `${u.weeklyHours}h / sem`}
+                        : `${u.workRate || 100}% • ${u.weeklyHours}h / sem`}
                     </option>
                   );
                 })}
@@ -1704,8 +1820,8 @@ export default function App() {
                     <span className="text-sm font-normal text-slate-500">/ semaine</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    Soit {inspectedUser.dailyHours}h/jour (5j) • {currentWeekStats.remoteDaysCount} j TT
-                    cette sem.
+                    Taux <strong>{inspectedUser.workRate || 100}%</strong> •{' '}
+                    {inspectedUser.dailyHours}h/jour (5j) • {currentWeekStats.remoteDaysCount} j TT
                   </p>
                 </div>
 
@@ -1778,8 +1894,9 @@ export default function App() {
               </div>
             )}
 
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
-              <div className="flex items-center gap-2">
+            {/* Barre navigation semaine + Validation verrouillable (Règle 4) */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-2xs">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setCurrentWeekStart((prev) => addDays(prev, -7))}
@@ -1818,15 +1935,45 @@ export default function App() {
                 </button>
               </div>
 
-              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={includeWeekend}
-                  onChange={(e) => setIncludeWeekend(e.target.checked)}
-                  className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
-                />
-                <span>Afficher samedi et dimanche</span>
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={includeWeekend}
+                    onChange={(e) => setIncludeWeekend(e.target.checked)}
+                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>Afficher samedi et dimanche</span>
+                </label>
+
+                {isWeekFullyValidated ? (
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold">
+                      <Lock className="w-3.5 h-3.5" />
+                      Semaine validée (Verrouillée)
+                    </span>
+                    {canManageTeam && (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleWeekValidation(false)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold"
+                      >
+                        <Unlock className="w-3.5 h-3.5" />
+                        Déverrouiller
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleToggleWeekValidation(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-2xs transition-colors"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    Valider mes horaires de la semaine
+                  </button>
+                )}
+              </div>
             </div>
 
             {isForfaitJours ? (
@@ -1849,6 +1996,7 @@ export default function App() {
                 <div className="divide-y divide-slate-100">
                   {weekDays.map((day) => {
                     const entry = getDayEntry(inspectedUser.id, day.iso);
+                    const isLockedForUser = entry.isValidated && !canManageTeam;
                     const isTelework = entry.isRemote || entry.status === 'REMOTE';
                     const statusMeta = DAY_STATUSES[entry.status] || DAY_STATUSES.WORKED;
                     const isOffOrHoliday = entry.status === 'OFF' || day.isHoliday;
@@ -1870,6 +2018,11 @@ export default function App() {
                               {day.dayName}
                             </span>
                             <span className="text-xs text-slate-500">{day.shortDate}</span>
+                            {entry.isValidated && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                <Lock className="w-2.5 h-2.5" /> Validé
+                              </span>
+                            )}
                             {day.isHoliday && (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-100 text-purple-800 border border-purple-200">
                                 <Sparkles className="w-3 h-3" />
@@ -1896,8 +2049,9 @@ export default function App() {
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
+                            disabled={isLockedForUser}
                             onClick={() => handleUpdateTimeLog(day.iso, 'status', 'WORKED')}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-50 ${
                               entry.status === 'WORKED' && !isTelework
                                 ? 'bg-slate-900 text-white border-slate-900'
                                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
@@ -1908,8 +2062,9 @@ export default function App() {
 
                           <button
                             type="button"
+                            disabled={isLockedForUser}
                             onClick={() => handleUpdateTimeLog(day.iso, 'status', 'REMOTE')}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-50 ${
                               isTelework && entry.status !== 'HALF_DAY'
                                 ? 'bg-sky-600 text-white border-sky-600'
                                 : 'bg-white text-sky-700 border-sky-200 hover:bg-sky-50'
@@ -1920,8 +2075,9 @@ export default function App() {
 
                           <button
                             type="button"
+                            disabled={isLockedForUser}
                             onClick={() => handleUpdateTimeLog(day.iso, 'status', 'HALF_DAY')}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-50 ${
                               entry.status === 'HALF_DAY'
                                 ? 'bg-teal-600 text-white border-teal-600'
                                 : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-50'
@@ -1932,9 +2088,10 @@ export default function App() {
 
                           <select
                             aria-label={`Statut journée ${day.dayName}`}
+                            disabled={isLockedForUser}
                             value={entry.status}
                             onChange={(e) => handleUpdateTimeLog(day.iso, 'status', e.target.value)}
-                            className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium bg-white text-slate-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-slate-900"
                           >
                             {Object.entries(DAY_STATUSES).map(([key, cfg]) => (
                               <option key={key} value={key}>
@@ -1942,6 +2099,26 @@ export default function App() {
                               </option>
                             ))}
                           </select>
+
+                          {!entry.isValidated ? (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleDayValidation(day.iso, true)}
+                              className="px-2.5 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-emerald-800"
+                            >
+                              Valider
+                            </button>
+                          ) : (
+                            canManageTeam && (
+                              <button
+                                type="button"
+                                onClick={() => handleToggleDayValidation(day.iso, false)}
+                                className="px-2.5 py-1.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 text-xs font-semibold text-amber-800"
+                              >
+                                Déverrouiller
+                              </button>
+                            )
+                          )}
                         </div>
                       </div>
                     );
@@ -1961,22 +2138,28 @@ export default function App() {
                         <th className="py-3.5 px-4">Reprise après-midi</th>
                         <th className="py-3.5 px-4">Départ soir</th>
                         <th className="py-3.5 px-4 text-right">Total jour</th>
-                        <th className="py-3.5 px-4 text-right">Action</th>
+                        <th className="py-3.5 px-4 text-right">Validation & Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-sm">
                       {weekDays.map((day) => {
                         const entry = getDayEntry(inspectedUser.id, day.iso);
+                        const isLockedForUser = entry.isValidated && !canManageTeam;
                         const isTelework = entry.isRemote || entry.status === 'REMOTE';
                         const statusMeta = DAY_STATUSES[entry.status] || DAY_STATUSES.WORKED;
                         const isClockEditable =
-                          entry.status === 'WORKED' ||
-                          entry.status === 'REMOTE' ||
-                          entry.status === 'HALF_DAY';
+                          !isLockedForUser &&
+                          (entry.status === 'WORKED' ||
+                            entry.status === 'REMOTE' ||
+                            entry.status === 'HALF_DAY');
                         const dailyTheoreticalMinutes = Math.round(inspectedUser.dailyHours * 60);
 
                         let dayAccountedMinutes = 0;
-                        if (isClockEditable) {
+                        if (
+                          entry.status === 'WORKED' ||
+                          entry.status === 'REMOTE' ||
+                          entry.status === 'HALF_DAY'
+                        ) {
                           dayAccountedMinutes = calculateDayWorkedMinutes(entry);
                         } else if (statusMeta.countsAsTheoretical && !day.isWeekend) {
                           dayAccountedMinutes = dailyTheoreticalMinutes;
@@ -1986,7 +2169,9 @@ export default function App() {
                           <tr
                             key={day.iso}
                             className={
-                              day.isHoliday
+                              entry.isValidated
+                                ? 'bg-emerald-50/20'
+                                : day.isHoliday
                                 ? 'bg-purple-50/40'
                                 : day.isWeekend
                                 ? 'bg-slate-50/70'
@@ -1994,8 +2179,15 @@ export default function App() {
                             }
                           >
                             <td className="py-3.5 px-4 whitespace-nowrap">
-                              <div className="font-semibold text-slate-900 capitalize">
-                                {day.dayName}
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-semibold text-slate-900 capitalize">
+                                  {day.dayName}
+                                </span>
+                                {entry.isValidated && (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                    <Lock className="w-2.5 h-2.5" /> Validé
+                                  </span>
+                                )}
                               </div>
                               <div className="text-xs text-slate-500 flex items-center gap-1.5">
                                 <span>{day.shortDate}</span>
@@ -2010,11 +2202,12 @@ export default function App() {
                             <td className="py-3.5 px-4">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <select
+                                  disabled={isLockedForUser}
                                   value={entry.status}
                                   onChange={(e) =>
                                     handleUpdateTimeLog(day.iso, 'status', e.target.value)
                                   }
-                                  className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${statusMeta.badgeClass}`}
+                                  className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer disabled:opacity-60 ${statusMeta.badgeClass}`}
                                 >
                                   {Object.entries(DAY_STATUSES).map(([key, cfg]) => (
                                     <option
@@ -2027,13 +2220,16 @@ export default function App() {
                                   ))}
                                 </select>
 
-                                {isClockEditable && (
+                                {(entry.status === 'WORKED' ||
+                                  entry.status === 'REMOTE' ||
+                                  entry.status === 'HALF_DAY') && (
                                   <button
                                     type="button"
+                                    disabled={isLockedForUser}
                                     onClick={() =>
                                       handleUpdateTimeLog(day.iso, 'isRemote', !isTelework)
                                     }
-                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-xs font-medium transition-colors ${
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-xs font-medium transition-colors disabled:opacity-60 ${
                                       isTelework
                                         ? 'bg-sky-50 text-sky-700 border-sky-200'
                                         : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
@@ -2068,13 +2264,38 @@ export default function App() {
                             </td>
 
                             <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                              <button
-                                type="button"
-                                onClick={() => handleAutoFillStandardDay(day.iso)}
-                                className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline"
-                              >
-                                Journée type
-                              </button>
+                              <div className="inline-flex items-center gap-2">
+                                {!isLockedForUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAutoFillStandardDay(day.iso)}
+                                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline"
+                                  >
+                                    Journée type
+                                  </button>
+                                )}
+                                {!entry.isValidated ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleDayValidation(day.iso, true)}
+                                    className="px-2.5 py-1 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-emerald-800"
+                                  >
+                                    Valider
+                                  </button>
+                                ) : canManageTeam ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleDayValidation(day.iso, false)}
+                                    className="px-2.5 py-1 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-xs font-semibold text-amber-800"
+                                  >
+                                    Déverrouiller
+                                  </button>
+                                ) : (
+                                  <span className="text-[11px] font-semibold text-slate-400">
+                                    Verrouillé
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -2087,9 +2308,8 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Coffee className="w-4 h-4 text-slate-400 shrink-0" />
                     <span>
-                      Les congés payés, RTT, jours fériés et arrêts maladie créditent
-                      automatiquement <strong>{inspectedUser.dailyHours}h</strong> afin de ne pas
-                      pénaliser le compteur.
+                      Une fois vos horaires validés, seul votre <strong>Manager</strong> ou la{' '}
+                      <strong>RH</strong> peut les modifier.
                     </span>
                   </div>
                   <div className="font-semibold text-slate-700">
@@ -2108,16 +2328,18 @@ export default function App() {
           </div>
         )}
 
+        {/* Règle 7 : Calendrier partagé avec absences/congés/télétravail de toute l'équipe, sans horaires */}
         {activeTab === 'calendar' && (
           <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-6 space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-900 capitalize">
-                  Calendrier d’équipe —{' '}
+                  Calendrier partagé d’équipe —{' '}
                   {calendarMonth.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Vue consolidée des présences, télétravail, congés, RTT et jours fériés
+                  Vue partagée des absences, congés payés, RTT et télétravail de toute l’équipe
+                  (les horaires individuels restent confidentiels)
                 </p>
               </div>
 
@@ -2155,17 +2377,34 @@ export default function App() {
                   <ChevronRight className="w-4 h-4" />
                 </button>
 
+                {departments.length > 0 && (
+                  <select
+                    value={departmentFilter}
+                    onChange={(e) => setDepartmentFilter(e.target.value)}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium bg-white"
+                  >
+                    <option value="ALL">Toutes les équipes</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
                 <select
                   value={calendarUserFilter}
                   onChange={(e) => setCalendarUserFilter(e.target.value)}
                   className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium bg-white"
                 >
                   <option value="ALL">Tous les collaborateurs</option>
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name}
-                    </option>
-                  ))}
+                  {users
+                    .filter((u) => u.isActive !== false)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name}
+                      </option>
+                    ))}
                 </select>
 
                 <select
@@ -2186,7 +2425,7 @@ export default function App() {
               <table className="w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="py-2.5 px-3 text-left font-semibold text-slate-700 sticky left-0 bg-slate-50 z-10 min-w-[170px]">
+                    <th className="py-2.5 px-3 text-left font-semibold text-slate-700 sticky left-0 bg-slate-50 z-10 min-w-[180px]">
                       Collaborateur
                     </th>
                     {monthDays.map((d) => (
@@ -2208,100 +2447,119 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredCalendarUsers.map((u) => (
-                    <tr key={u.id} className="hover:bg-slate-50/50">
-                      <td className="py-2.5 px-3 font-semibold text-slate-800 sticky left-0 bg-white z-10 border-r border-slate-100">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-6 h-6 rounded-full ${u.color} text-white text-[10px] font-bold flex items-center justify-center shrink-0`}
-                          >
-                            {u.avatar}
-                          </span>
-                          <span className="truncate">{u.name}</span>
-                        </div>
-                      </td>
-                      {monthDays.map((d) => {
-                        const entry = getDayEntry(u.id, d.iso);
-                        const isRemoteDay = entry.isRemote || entry.status === 'REMOTE';
-                        const matchesFilter =
-                          calendarStatusFilter === 'ALL' ||
-                          (calendarStatusFilter === 'REMOTE' && isRemoteDay) ||
-                          entry.status === calendarStatusFilter;
+                  {filteredCalendarUsers.map((u) => {
+                    const dept = departments.find((d) => d.id === u.departmentId);
+                    return (
+                      <tr key={u.id} className="hover:bg-slate-50/50">
+                        <td className="py-2.5 px-3 font-semibold text-slate-800 sticky left-0 bg-white z-10 border-r border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`w-6 h-6 rounded-full ${u.color} text-white text-[10px] font-bold flex items-center justify-center shrink-0`}
+                            >
+                              {u.avatar}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="truncate">{u.name}</div>
+                              {dept && (
+                                <div className="text-[10px] font-normal text-slate-400 truncate">
+                                  {dept.name}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        {monthDays.map((d) => {
+                          const entry = getDayEntry(u.id, d.iso);
+                          const isRemoteDay = entry.isRemote || entry.status === 'REMOTE';
+                          const matchesFilter =
+                            calendarStatusFilter === 'ALL' ||
+                            (calendarStatusFilter === 'REMOTE' && isRemoteDay) ||
+                            entry.status === calendarStatusFilter;
 
-                        let cellBadge = null;
-                        if (matchesFilter && !d.isWeekend) {
-                          if (d.holidayName) {
-                            cellBadge = (
-                              <span
-                                title={d.holidayName}
-                                className="inline-block w-5 h-5 leading-5 rounded bg-purple-100 text-purple-800 font-bold text-[10px]"
-                              >
-                                F
-                              </span>
-                            );
-                          } else if (entry.status === 'CP') {
-                            cellBadge = (
-                              <span
-                                title="Congés Payés"
-                                className="inline-block w-5 h-5 leading-5 rounded bg-amber-100 text-amber-800 font-bold text-[10px]"
-                              >
-                                CP
-                              </span>
-                            );
-                          } else if (entry.status === 'RTT') {
-                            cellBadge = (
-                              <span
-                                title="RTT"
-                                className="inline-block w-5 h-5 leading-5 rounded bg-indigo-100 text-indigo-800 font-bold text-[10px]"
-                              >
-                                RTT
-                              </span>
-                            );
-                          } else if (entry.status === 'SICK') {
-                            cellBadge = (
-                              <span
-                                title="Arrêt maladie"
-                                className="inline-block w-5 h-5 leading-5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]"
-                              >
-                                M
-                              </span>
-                            );
-                          } else if (isRemoteDay) {
-                            cellBadge = (
-                              <span
-                                title="Télétravail"
-                                className="inline-block w-5 h-5 leading-5 rounded bg-sky-100 text-sky-800 font-bold text-[10px]"
-                              >
-                                TT
-                              </span>
-                            );
-                          } else if (entry.status === 'WORKED') {
-                            cellBadge = (
-                              <span
-                                title="Présent"
-                                className="inline-block w-2 h-2 rounded-full bg-emerald-500"
-                              />
-                            );
+                          let cellBadge = null;
+                          if (matchesFilter && !d.isWeekend) {
+                            if (d.holidayName) {
+                              cellBadge = (
+                                <span
+                                  title={d.holidayName}
+                                  className="inline-block w-5 h-5 leading-5 rounded bg-purple-100 text-purple-800 font-bold text-[10px]"
+                                >
+                                  F
+                                </span>
+                              );
+                            } else if (entry.status === 'CP') {
+                              cellBadge = (
+                                <span
+                                  title="Congés Payés"
+                                  className="inline-block w-5 h-5 leading-5 rounded bg-amber-100 text-amber-800 font-bold text-[10px]"
+                                >
+                                  CP
+                                </span>
+                              );
+                            } else if (entry.status === 'RTT') {
+                              cellBadge = (
+                                <span
+                                  title="RTT"
+                                  className="inline-block w-5 h-5 leading-5 rounded bg-indigo-100 text-indigo-800 font-bold text-[10px]"
+                                >
+                                  RTT
+                                </span>
+                              );
+                            } else if (entry.status === 'SICK') {
+                              cellBadge = (
+                                <span
+                                  title="Arrêt maladie"
+                                  className="inline-block w-5 h-5 leading-5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]"
+                                >
+                                  M
+                                </span>
+                              );
+                            } else if (entry.status === 'OFF') {
+                              cellBadge = (
+                                <span
+                                  title="Absence / Repos"
+                                  className="inline-block w-5 h-5 leading-5 rounded bg-slate-200 text-slate-700 font-bold text-[10px]"
+                                >
+                                  A
+                                </span>
+                              );
+                            } else if (isRemoteDay) {
+                              cellBadge = (
+                                <span
+                                  title="Télétravail"
+                                  className="inline-block w-5 h-5 leading-5 rounded bg-sky-100 text-sky-800 font-bold text-[10px]"
+                                >
+                                  TT
+                                </span>
+                              );
+                            } else if (entry.status === 'WORKED') {
+                              cellBadge = (
+                                <span
+                                  title="Présentiel"
+                                  className="inline-block w-2 h-2 rounded-full bg-emerald-500"
+                                />
+                              );
+                            }
                           }
-                        }
 
-                        return (
-                          <td
-                            key={d.iso}
-                            className={`py-2 px-1 text-center ${
-                              d.holidayName
-                                ? 'bg-purple-50/50'
-                                : d.isWeekend
-                                ? 'bg-slate-50'
-                                : ''
-                            }`}
-                          >
-                            {cellBadge}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                          return (
+                            <td
+                              key={d.iso}
+                              className={`py-2 px-1 text-center ${
+                                d.holidayName
+                                  ? 'bg-purple-50/50'
+                                  : d.isWeekend
+                                  ? 'bg-slate-50'
+                                  : ''
+                              }`}
+                            >
+                              {cellBadge}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -2387,7 +2645,7 @@ export default function App() {
             <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h2 className="text-base font-bold text-slate-900">
-                  {canManageTeam ? 'Demandes de l’équipe à traiter' : 'Mes demandes'}
+                  {canManageTeam ? 'Demandes à valider' : 'Mes demandes'}
                 </h2>
 
                 <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
@@ -2413,22 +2671,26 @@ export default function App() {
                 </div>
               </div>
 
-              {leaveRequests.filter(
-                (r) =>
-                  (canManageTeam || r.userId === activeUser.id) &&
+              {leaveRequests.filter((r) => {
+                const isScopedUser = visibleTimesheetUsers.some((u) => u.id === r.userId);
+                return (
+                  (canManageTeam ? isScopedUser : r.userId === activeUser.id) &&
                   (requestStatusFilter === 'ALL' || r.status === requestStatusFilter)
-              ).length === 0 ? (
+                );
+              }).length === 0 ? (
                 <div className="text-center py-10 text-sm text-slate-400">
                   Aucune demande enregistrée dans cette catégorie.
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100">
                   {leaveRequests
-                    .filter(
-                      (r) =>
-                        (canManageTeam || r.userId === activeUser.id) &&
+                    .filter((r) => {
+                      const isScopedUser = visibleTimesheetUsers.some((u) => u.id === r.userId);
+                      return (
+                        (canManageTeam ? isScopedUser : r.userId === activeUser.id) &&
                         (requestStatusFilter === 'ALL' || r.status === requestStatusFilter)
-                    )
+                      );
+                    })
                     .map((req) => {
                       const requester = users.find((u) => u.id === req.userId);
                       const statusBadge =
@@ -2518,126 +2780,129 @@ export default function App() {
           </div>
         )}
 
+        {/* Onglet administration RH & Création de comptes Manager */}
         {activeTab === 'team_settings' && canManageTeam && (
           <div className="space-y-6">
-            <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-bold text-slate-900">
-                    Services & Managers rattachés
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    {isHR
-                      ? 'Vue RH globale : créez les services et rattachez le manager responsable à la tête de chacun.'
-                      : 'Associez chaque service à son manager responsable et rattachez vos collaborateurs.'}
-                  </p>
+            {/* Règle 5 : Seule la RH peut créer des équipes/services et associer un manager à chaque équipe */}
+            {isHR && (
+              <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900">
+                      Gestion des équipes & Managers responsables (RH uniquement)
+                    </h2>
+                    <p className="text-xs text-slate-500">
+                      Créez chaque équipe/service et associez le Manager responsable à sa tête.
+                    </p>
+                  </div>
+                  <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 w-fit">
+                    Droits exclusifs RH
+                  </span>
                 </div>
-                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 w-fit">
-                  {isHR ? 'Accès RH : Tous les services' : 'Accès Manager'}
-                </span>
-              </div>
 
-              <form
-                onSubmit={handleCreateDepartment}
-                className="grid grid-cols-1 sm:grid-cols-3 gap-3"
-              >
-                <input
-                  type="text"
-                  required
-                  value={newDepartment.name}
-                  onChange={(e) => setNewDepartment({ ...newDepartment, name: e.target.value })}
-                  placeholder="Nom du service (ex. Marketing, Commerce, Tech...)"
-                  className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                />
-                <select
-                  value={newDepartment.managerId}
-                  onChange={(e) =>
-                    setNewDepartment({ ...newDepartment, managerId: e.target.value })
-                  }
-                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                <form
+                  onSubmit={handleCreateDepartment}
+                  className="grid grid-cols-1 sm:grid-cols-3 gap-3"
                 >
-                  <option value="">— Manager rattaché à la tête du service —</option>
-                  {users
-                    .filter((u) => u.role === 'manager' || u.role === 'hr')
-                    .map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({m.role === 'manager' ? 'Manager' : 'RH'})
-                      </option>
-                    ))}
-                </select>
-                <button
-                  type="submit"
-                  className="py-2 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
-                >
-                  Créer le service
-                </button>
-              </form>
+                  <input
+                    type="text"
+                    required
+                    value={newDepartment.name}
+                    onChange={(e) => setNewDepartment({ ...newDepartment, name: e.target.value })}
+                    placeholder="Nom de l’équipe (ex. Marketing, Commerce, Tech...)"
+                    className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
+                  />
+                  <select
+                    value={newDepartment.managerId}
+                    onChange={(e) =>
+                      setNewDepartment({ ...newDepartment, managerId: e.target.value })
+                    }
+                    className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                  >
+                    <option value="">— Associer un Manager à cette équipe —</option>
+                    {users
+                      .filter((u) => u.role === 'manager')
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.email})
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="py-2 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
+                  >
+                    Créer l’équipe
+                  </button>
+                </form>
 
-              {departments.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
-                  {departments.map((dept) => {
-                    const deptManager = users.find((u) => u.id === dept.managerId);
-                    const membersInDept = users.filter((u) => u.departmentId === dept.id);
-                    return (
-                      <div
-                        key={dept.id}
-                        className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2.5"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <input
-                            type="text"
-                            value={dept.name}
-                            onChange={(e) =>
-                              handleUpdateDepartment(dept.id, 'name', e.target.value)
-                            }
-                            className="font-bold text-sm text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200 flex-1"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteDepartment(dept.id)}
-                            className="px-2.5 py-1 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-xs font-semibold text-rose-700"
-                          >
-                            Suppr.
-                          </button>
+                {departments.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
+                    {departments.map((dept) => {
+                      const deptManager = users.find((u) => u.id === dept.managerId);
+                      const membersInDept = users.filter((u) => u.departmentId === dept.id);
+                      return (
+                        <div
+                          key={dept.id}
+                          className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <input
+                              type="text"
+                              value={dept.name}
+                              onChange={(e) =>
+                                handleUpdateDepartment(dept.id, 'name', e.target.value)
+                              }
+                              className="font-bold text-sm text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200 flex-1"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDepartment(dept.id)}
+                              className="px-2.5 py-1 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-xs font-semibold text-rose-700"
+                            >
+                              Suppr.
+                            </button>
+                          </div>
+
+                          <div className="text-xs text-slate-600">
+                            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                              Manager rattaché
+                            </label>
+                            <select
+                              value={dept.managerId || ''}
+                              onChange={(e) =>
+                                handleUpdateDepartment(dept.id, 'managerId', e.target.value)
+                              }
+                              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white"
+                            >
+                              <option value="">Aucun manager associé</option>
+                              {users
+                                .filter((u) => u.role === 'manager')
+                                .map((m) => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+
+                          <div className="text-[11px] text-slate-500 flex items-center justify-between pt-1 border-t border-slate-200/70">
+                            <span>
+                              Manager : <strong>{deptManager?.name || 'Aucun'}</strong>
+                            </span>
+                            <span>
+                              <strong>{membersInDept.length}</strong> collaborateur(s)
+                            </span>
+                          </div>
                         </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
 
-                        <div className="text-xs text-slate-600">
-                          <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                            Manager rattaché
-                          </label>
-                          <select
-                            value={dept.managerId || ''}
-                            onChange={(e) =>
-                              handleUpdateDepartment(dept.id, 'managerId', e.target.value)
-                            }
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white"
-                          >
-                            <option value="">Non rattaché</option>
-                            {users
-                              .filter((u) => u.role === 'manager' || u.role === 'hr')
-                              .map((m) => (
-                                <option key={m.id} value={m.id}>
-                                  {m.name} ({m.role === 'manager' ? 'Manager' : 'RH'})
-                                </option>
-                              ))}
-                          </select>
-                        </div>
-
-                        <div className="text-[11px] text-slate-500 flex items-center justify-between pt-1 border-t border-slate-200/70">
-                          <span>
-                            Chef : <strong>{deptManager?.name || 'Aucun'}</strong>
-                          </span>
-                          <span>
-                            <strong>{membersInDept.length}</strong> membre(s)
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-
+            {/* Règle 1 & 6 : Création de compte par RH et Manager (avec temps partiel / mi-temps / taux / heures) */}
             <form
               onSubmit={handleAddTeamMember}
               className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4"
@@ -2645,7 +2910,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-indigo-600" />
                 <h2 className="text-base font-bold text-slate-900">
-                  Créer un profil collaborateur (avec adresse email)
+                  Créer un compte collaborateur
                 </h2>
               </div>
 
@@ -2666,29 +2931,35 @@ export default function App() {
                   placeholder="email@entreprise.fr *"
                   className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
                 />
-                <select
-                  value={newMember.departmentId}
-                  onChange={(e) =>
-                    setNewMember({ ...newMember, departmentId: e.target.value })
-                  }
-                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
-                >
-                  <option value="">Service (aucun)</option>
-                  {departments.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={newMember.role}
-                  onChange={(e) => setNewMember({ ...newMember, role: e.target.value })}
-                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
-                >
-                  <option value="collaborator">Collaborateur</option>
-                  <option value="hr">RH</option>
-                  <option value="manager">Manager</option>
-                </select>
+
+                {isHR && (
+                  <>
+                    <select
+                      value={newMember.departmentId}
+                      onChange={(e) =>
+                        setNewMember({ ...newMember, departmentId: e.target.value })
+                      }
+                      className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                    >
+                      <option value="">Équipe (aucune)</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={newMember.role}
+                      onChange={(e) => setNewMember({ ...newMember, role: e.target.value })}
+                      className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                    >
+                      <option value="collaborator">Collaborateur</option>
+                      <option value="manager">Manager</option>
+                      <option value="hr">RH</option>
+                    </select>
+                  </>
+                )}
+
                 <select
                   value={newMember.contractType}
                   onChange={(e) =>
@@ -2696,36 +2967,112 @@ export default function App() {
                   }
                   className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
                 >
-                  <option value="HOURLY">Taux horaire</option>
+                  <option value="HOURLY">Contrat horaire / Temps partiel</option>
                   <option value="FORFAIT_JOURS">Cadre au Forfait Jours</option>
                 </select>
-                <div className="flex items-center gap-2">
-                  {newMember.contractType === 'HOURLY' ? (
-                    <input
-                      type="number"
-                      min="1"
-                      max="60"
-                      step="0.5"
-                      value={newMember.weeklyHours}
-                      onChange={(e) =>
-                        setNewMember({ ...newMember, weeklyHours: e.target.value })
-                      }
-                      placeholder="Heures/sem"
-                      className="w-24 px-2.5 py-2 rounded-xl border border-slate-200 text-sm"
-                    />
-                  ) : (
-                    <span className="text-xs font-semibold text-indigo-700 px-2">
-                      Forfait Jours
-                    </span>
-                  )}
-                  <button
-                    type="submit"
-                    className="flex-1 py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
-                  >
-                    Ajouter
-                  </button>
-                </div>
+
+                <button
+                  type="submit"
+                  className="py-2 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
+                >
+                  Créer le compte
+                </button>
               </div>
+
+              {newMember.contractType === 'HOURLY' && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Taux d’activité (%) — ex. 50% mi-temps, 80%, 100%
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      {[50, 80, 100].map((ratePreset) => (
+                        <button
+                          key={ratePreset}
+                          type="button"
+                          onClick={() => {
+                            const h = Number(((35 * ratePreset) / 100).toFixed(2));
+                            setNewMember({
+                              ...newMember,
+                              workRate: ratePreset,
+                              weeklyHours: h,
+                            });
+                          }}
+                          className={`px-2 py-1 rounded-lg text-xs font-bold border ${
+                            Number(newMember.workRate) === ratePreset
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          {ratePreset}%
+                        </button>
+                      ))}
+                      <input
+                        type="number"
+                        min="10"
+                        max="100"
+                        step="5"
+                        value={newMember.workRate}
+                        onChange={(e) => {
+                          const r = Math.min(100, Math.max(10, Number(e.target.value) || 100));
+                          const h = Number(((35 * r) / 100).toFixed(2));
+                          setNewMember({ ...newMember, workRate: r, weeklyHours: h });
+                        }}
+                        className="w-20 px-2.5 py-1 rounded-lg border border-slate-200 text-xs font-semibold bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Base hebdomadaire (heures/semaine)
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      {[17.5, 28, 35, 37, 39].map((hrsPreset) => (
+                        <button
+                          key={hrsPreset}
+                          type="button"
+                          onClick={() =>
+                            setNewMember({
+                              ...newMember,
+                              weeklyHours: hrsPreset,
+                              workRate: Math.min(100, Math.round((hrsPreset / 35) * 100)),
+                            })
+                          }
+                          className={`px-2 py-1 rounded-lg text-xs font-bold border ${
+                            Number(newMember.weeklyHours) === hrsPreset
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          {hrsPreset}h
+                        </button>
+                      ))}
+                      <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        step="0.5"
+                        value={newMember.weeklyHours}
+                        onChange={(e) => {
+                          const h = Math.max(1, Number(e.target.value) || 35);
+                          setNewMember({
+                            ...newMember,
+                            weeklyHours: h,
+                            workRate: Math.min(100, Math.round((h / 35) * 100)),
+                          });
+                        }}
+                        className="w-20 px-2.5 py-1 rounded-lg border border-slate-200 text-xs font-semibold bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center text-xs text-slate-600">
+                    Soit <strong>{Number((newMember.weeklyHours / 5).toFixed(2))}h / jour</strong>{' '}
+                    sur 5 jours ouvrés.
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
                 <div>
@@ -2772,381 +3119,455 @@ export default function App() {
               </div>
             </form>
 
-            <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
-                      <Sparkles className="w-4 h-4" />
+            {/* Règle 3, 5 & 6 : Tableau complet de gestion RH (visible et modifiable par la RH) */}
+            {isHR && (
+              <>
+                <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
+                          <Sparkles className="w-4 h-4" />
+                        </div>
+                        <h2 className="text-lg font-bold text-slate-900">
+                          Jours fériés automatiques ({currentWeekStart.getFullYear()})
+                        </h2>
+                      </div>
+                      <p className="text-sm text-slate-500">
+                        Calcul automatique des 11 jours fériés nationaux (Lundi de Pâques,
+                        Ascension, Lundi de Pentecôte).
+                      </p>
                     </div>
-                    <h2 className="text-lg font-bold text-slate-900">
-                      Jours fériés automatiques ({currentWeekStart.getFullYear()})
-                    </h2>
-                  </div>
-                  <p className="text-sm text-slate-500">
-                    Calcul automatique des 11 jours fériés nationaux (incluant Lundi de Pâques,
-                    Ascension et Lundi de Pentecôte).
-                  </p>
-                </div>
 
-                <label className="flex items-center gap-3 p-3.5 rounded-xl border border-purple-200 bg-purple-50/60 cursor-pointer shrink-0 select-none">
-                  <input
-                    type="checkbox"
-                    checked={isAlsaceMoselle}
-                    onChange={(e) => handleToggleAlsaceMoselle(e.target.checked)}
-                    className="w-4 h-4 rounded border-purple-300 text-purple-700 focus:ring-purple-600"
-                  />
-                  <div>
-                    <div className="text-xs font-bold text-purple-950 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-purple-700" />
-                      Option Alsace-Moselle (57, 67, 68)
-                    </div>
-                    <div className="text-[11px] text-purple-700">
-                      Ajoute Vendredi Saint & Saint-Étienne (26 déc.)
-                    </div>
+                    <label className="flex items-center gap-3 p-3.5 rounded-xl border border-purple-200 bg-purple-50/60 cursor-pointer shrink-0 select-none">
+                      <input
+                        type="checkbox"
+                        checked={isAlsaceMoselle}
+                        onChange={(e) => handleToggleAlsaceMoselle(e.target.checked)}
+                        className="w-4 h-4 rounded border-purple-300 text-purple-700 focus:ring-purple-600"
+                      />
+                      <div>
+                        <div className="text-xs font-bold text-purple-950 flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-purple-700" />
+                          Option Alsace-Moselle (57, 67, 68)
+                        </div>
+                        <div className="text-[11px] text-purple-700">
+                          Ajoute Vendredi Saint & Saint-Étienne (26 déc.)
+                        </div>
+                      </div>
+                    </label>
                   </div>
-                </label>
-              </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-2">
-                {currentYearHolidaysList.map((h) => (
-                  <div
-                    key={h.iso}
-                    className={`p-2.5 rounded-xl border text-xs ${
-                      h.label.includes('Alsace-Moselle')
-                        ? 'bg-purple-50/70 border-purple-200 text-purple-950'
-                        : 'bg-slate-50 border-slate-200/80 text-slate-800'
-                    }`}
-                  >
-                    <div className="font-bold">
-                      {h.date.toLocaleDateString('fr-FR', {
-                        day: '2-digit',
-                        month: 'short',
-                      })}
-                    </div>
-                    <div className="text-[11px] text-slate-600 truncate" title={h.label}>
-                      {h.label}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900">
-                    Gestion des équipes, contrats horaires et forfait jours
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    Définissez pour chaque collaborateur son service, son manager rattaché, son
-                    adresse email, son rôle, ses dates d’entrée/sortie, son statut et son contrat.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <select
-                    aria-label="Filtrer par service"
-                    value={departmentFilter}
-                    onChange={(e) => setDepartmentFilter(e.target.value)}
-                    className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
-                  >
-                    <option value="ALL">Tous les services</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-2">
+                    {currentYearHolidaysList.map((h) => (
+                      <div
+                        key={h.iso}
+                        className={`p-2.5 rounded-xl border text-xs ${
+                          h.label.includes('Alsace-Moselle')
+                            ? 'bg-purple-50/70 border-purple-200 text-purple-950'
+                            : 'bg-slate-50 border-slate-200/80 text-slate-800'
+                        }`}
+                      >
+                        <div className="font-bold">
+                          {h.date.toLocaleDateString('fr-FR', {
+                            day: '2-digit',
+                            month: 'short',
+                          })}
+                        </div>
+                        <div className="text-[11px] text-slate-600 truncate" title={h.label}>
+                          {h.label}
+                        </div>
+                      </div>
                     ))}
-                  </select>
-                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={showInactiveMembers}
-                      onChange={(e) => setShowInactiveMembers(e.target.checked)}
-                      className="rounded border-slate-300 text-slate-900"
-                    />
-                    <span>Afficher les collaborateurs désactivés</span>
-                  </label>
-                </div>
-              </div>
+                  </div>
+                </section>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-50">
-                      <th className="py-3 px-4">Collaborateur & Email</th>
-                      <th className="py-3 px-4">Service & Manager</th>
-                      <th className="py-3 px-4">Entrée / Sortie</th>
-                      <th className="py-3 px-4">Statut</th>
-                      <th className="py-3 px-4">Rôle</th>
-                      <th className="py-3 px-4">Type de contrat</th>
-                      <th className="py-3 px-4">Base horaire (h/sem)</th>
-                      <th className="py-3 px-4">Solde initial (min)</th>
-                      <th className="py-3 px-4">Quota RTT annuel (j)</th>
-                      <th className="py-3 px-4">Quota CP annuel (j)</th>
-                      <th className="py-3 px-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-sm">
-                    {users
-                      .filter(
-                        (u) =>
-                          (departmentFilter === 'ALL' || u.departmentId === departmentFilter) &&
-                          (showInactiveMembers || u.isActive !== false)
-                      )
-                      .map((u) => {
-                        const isUserForfait = u.contractType === 'FORFAIT_JOURS';
-                        const isSelf = u.id === activeUser.id;
-                        const isMemberActive = u.isActive !== false;
-                        const memberDept = departments.find((d) => d.id === u.departmentId);
-                        const deptManager = users.find((m) => m.id === memberDept?.managerId);
-                        return (
-                          <tr
-                            key={u.id}
-                            className={`hover:bg-slate-50/70 ${
-                              !isMemberActive ? 'bg-slate-50/80 opacity-80' : ''
-                            }`}
-                          >
-                            <td className="py-3.5 px-4">
-                              <div className="flex items-center gap-3">
-                                <span
-                                  className={`w-8 h-8 rounded-full ${u.color} text-white text-xs font-bold flex items-center justify-center shrink-0`}
-                                >
-                                  {u.avatar}
-                                </span>
-                                <div className="space-y-1">
-                                  <input
-                                    type="text"
-                                    value={u.name}
-                                    onChange={(e) =>
-                                      handleUpdateUserContract(u.id, 'name', e.target.value)
-                                    }
-                                    className="block font-bold text-slate-900 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none text-sm"
-                                  />
-                                  <input
-                                    type="email"
-                                    value={u.email}
-                                    onChange={(e) =>
-                                      handleUpdateUserContract(u.id, 'email', e.target.value)
-                                    }
-                                    className="block text-xs text-slate-500 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
-                                  />
-                                </div>
-                              </div>
-                            </td>
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-bold text-slate-900">
+                        Tableau RH : Équipes, Temps partiel / Taux horaires, Statuts & Suppression
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        Affectez chaque collaborateur à son équipe, réglez le taux (%) et les
+                        heures (mi-temps, temps partiel, 35h/37h/39h ou forfait jours), activez,
+                        désactivez ou supprimez une ligne.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <select
+                        aria-label="Filtrer par équipe"
+                        value={departmentFilter}
+                        onChange={(e) => setDepartmentFilter(e.target.value)}
+                        className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
+                      >
+                        <option value="ALL">Toutes les équipes</option>
+                        {departments.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.name}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showInactiveMembers}
+                          onChange={(e) => setShowInactiveMembers(e.target.checked)}
+                          className="rounded border-slate-300 text-slate-900"
+                        />
+                        <span>Afficher les comptes désactivés</span>
+                      </label>
+                    </div>
+                  </div>
 
-                            <td className="py-3.5 px-4 space-y-1">
-                              <select
-                                value={u.departmentId || ''}
-                                onChange={(e) =>
-                                  handleUpdateUserContract(u.id, 'departmentId', e.target.value)
-                                }
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 cursor-pointer"
-                              >
-                                <option value="">Aucun service</option>
-                                {departments.map((d) => (
-                                  <option key={d.id} value={d.id}>
-                                    {d.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <div className="text-[11px] text-slate-500">
-                                Manager :{' '}
-                                <strong>{deptManager?.name || 'Non rattaché'}</strong>
-                              </div>
-                            </td>
-
-                            <td className="py-3.5 px-4 space-y-1">
-                              <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                                <span className="w-12 font-semibold">Entrée :</span>
-                                <input
-                                  type="date"
-                                  value={u.entryDate || ''}
-                                  onChange={(e) =>
-                                    handleUpdateUserContract(u.id, 'entryDate', e.target.value)
-                                  }
-                                  className="px-2 py-1 rounded border border-slate-200 text-xs bg-white text-slate-700"
-                                />
-                              </div>
-                              <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                                <span className="w-12 font-semibold">Sortie :</span>
-                                <input
-                                  type="date"
-                                  value={u.exitDate || ''}
-                                  onChange={(e) =>
-                                    handleUpdateUserContract(u.id, 'exitDate', e.target.value)
-                                  }
-                                  className="px-2 py-1 rounded border border-slate-200 text-xs bg-white text-slate-700"
-                                />
-                              </div>
-                            </td>
-
-                            <td className="py-3.5 px-4 whitespace-nowrap">
-                              <button
-                                type="button"
-                                disabled={isSelf}
-                                onClick={() =>
-                                  handleUpdateUserContract(u.id, 'isActive', !isMemberActive)
-                                }
-                                className={`px-2.5 py-1 rounded-full text-xs font-bold border transition-colors ${
-                                  isMemberActive
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                    : 'bg-slate-200 text-slate-700 border-slate-300 hover:bg-slate-300'
-                                } disabled:opacity-60`}
-                              >
-                                {isMemberActive ? 'Actif' : 'Désactivé'}
-                              </button>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              <select
-                                value={u.role}
-                                onChange={(e) =>
-                                  handleUpdateUserContract(u.id, 'role', e.target.value)
-                                }
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-700 cursor-pointer"
-                              >
-                                <option value="collaborator">Collaborateur</option>
-                                <option value="hr">RH</option>
-                                <option value="manager">Manager</option>
-                              </select>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              <select
-                                value={u.contractType}
-                                onChange={(e) =>
-                                  handleUpdateUserContract(u.id, 'contractType', e.target.value)
-                                }
-                                className={`px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
-                                  isUserForfait
-                                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-50">
+                          <th className="py-3 px-4">Collaborateur & Email</th>
+                          <th className="py-3 px-4">Équipe & Manager</th>
+                          <th className="py-3 px-4">Entrée / Sortie</th>
+                          <th className="py-3 px-4">État du compte</th>
+                          <th className="py-3 px-4">Rôle</th>
+                          <th className="py-3 px-4">Type de contrat</th>
+                          <th className="py-3 px-4">Taux (%) & Heures/sem</th>
+                          <th className="py-3 px-4">Solde init. (min)</th>
+                          <th className="py-3 px-4">RTT / CP (j)</th>
+                          <th className="py-3 px-4 text-right">Suppression</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-sm">
+                        {users
+                          .filter(
+                            (u) =>
+                              (departmentFilter === 'ALL' ||
+                                u.departmentId === departmentFilter) &&
+                              (showInactiveMembers || u.isActive !== false)
+                          )
+                          .map((u) => {
+                            const isUserForfait = u.contractType === 'FORFAIT_JOURS';
+                            const isSelf = u.id === activeUser.id;
+                            const isMemberActive = u.isActive !== false;
+                            const memberDept = departments.find((d) => d.id === u.departmentId);
+                            const deptManager = users.find(
+                              (m) => m.id === memberDept?.managerId
+                            );
+                            return (
+                              <tr
+                                key={u.id}
+                                className={`hover:bg-slate-50/70 ${
+                                  !isMemberActive ? 'bg-slate-100/70' : ''
                                 }`}
                               >
-                                <option value="FORFAIT_JOURS">Cadre au Forfait Jours</option>
-                                <option value="HOURLY">Taux Horaire</option>
-                              </select>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              {isUserForfait ? (
-                                <span className="text-xs text-slate-400 italic">
-                                  Non applicable (Forfait)
-                                </span>
-                              ) : (
-                                <div className="space-y-1.5">
-                                  <div className="flex items-center gap-1">
-                                    {[35, 37, 39].map((preset) => (
-                                      <button
-                                        key={preset}
-                                        type="button"
-                                        onClick={() =>
-                                          handleUpdateUserContract(u.id, 'weeklyHours', preset)
+                                <td className="py-3.5 px-4">
+                                  <div className="flex items-center gap-3">
+                                    <span
+                                      className={`w-8 h-8 rounded-full ${u.color} text-white text-xs font-bold flex items-center justify-center shrink-0`}
+                                    >
+                                      {u.avatar}
+                                    </span>
+                                    <div className="space-y-1">
+                                      <input
+                                        type="text"
+                                        value={u.name}
+                                        onChange={(e) =>
+                                          handleUpdateUserContract(u.id, 'name', e.target.value)
                                         }
-                                        className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
-                                          Number(u.weeklyHours) === preset
-                                            ? 'bg-slate-900 text-white border-slate-900'
-                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                        }`}
-                                      >
-                                        {preset}h
-                                      </button>
-                                    ))}
+                                        className="block font-bold text-slate-900 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none text-sm"
+                                      />
+                                      <input
+                                        type="email"
+                                        value={u.email}
+                                        onChange={(e) =>
+                                          handleUpdateUserContract(u.id, 'email', e.target.value)
+                                        }
+                                        className="block text-xs text-slate-500 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
+                                      />
+                                    </div>
                                   </div>
-                                  <input
-                                    type="number"
-                                    step="0.5"
-                                    min="1"
-                                    max="60"
-                                    value={u.weeklyHours}
+                                </td>
+
+                                <td className="py-3.5 px-4 space-y-1">
+                                  <select
+                                    value={u.departmentId || ''}
                                     onChange={(e) =>
-                                      handleUpdateUserContract(u.id, 'weeklyHours', e.target.value)
+                                      handleUpdateUserContract(
+                                        u.id,
+                                        'departmentId',
+                                        e.target.value
+                                      )
                                     }
-                                    className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
-                                  />
-                                </div>
-                              )}
-                            </td>
+                                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 cursor-pointer"
+                                  >
+                                    <option value="">Aucune équipe</option>
+                                    {departments.map((d) => (
+                                      <option key={d.id} value={d.id}>
+                                        {d.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div className="text-[11px] text-slate-500">
+                                    Manager :{' '}
+                                    <strong>{deptManager?.name || 'Non rattaché'}</strong>
+                                  </div>
+                                </td>
 
-                            <td className="py-3.5 px-4">
-                              {isUserForfait ? (
-                                <span className="text-xs text-slate-400 italic">—</span>
-                              ) : (
-                                <input
-                                  type="number"
-                                  step="15"
-                                  value={u.initialBalanceMinutes}
-                                  onChange={(e) =>
-                                    handleUpdateUserContract(
-                                      u.id,
-                                      'initialBalanceMinutes',
-                                      e.target.value
-                                    )
-                                  }
-                                  className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
-                                />
-                              )}
-                            </td>
+                                <td className="py-3.5 px-4 space-y-1">
+                                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                                    <span className="w-12 font-semibold">Entrée :</span>
+                                    <input
+                                      type="date"
+                                      value={u.entryDate || ''}
+                                      onChange={(e) =>
+                                        handleUpdateUserContract(
+                                          u.id,
+                                          'entryDate',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="px-2 py-1 rounded border border-slate-200 text-xs bg-white text-slate-700"
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                                    <span className="w-12 font-semibold">Sortie :</span>
+                                    <input
+                                      type="date"
+                                      value={u.exitDate || ''}
+                                      onChange={(e) =>
+                                        handleUpdateUserContract(
+                                          u.id,
+                                          'exitDate',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="px-2 py-1 rounded border border-slate-200 text-xs bg-white text-slate-700"
+                                    />
+                                  </div>
+                                </td>
 
-                            <td className="py-3.5 px-4">
-                              <input
-                                type="number"
-                                step="0.5"
-                                min="0"
-                                value={u.annualRttQuota}
-                                onChange={(e) =>
-                                  handleUpdateUserContract(u.id, 'annualRttQuota', e.target.value)
-                                }
-                                className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
-                              />
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              <input
-                                type="number"
-                                step="0.5"
-                                min="0"
-                                value={u.annualCpQuota}
-                                onChange={(e) =>
-                                  handleUpdateUserContract(u.id, 'annualCpQuota', e.target.value)
-                                }
-                                className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
-                              />
-                            </td>
-
-                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                              {isSelf ? (
-                                <span className="text-xs text-slate-400 italic">
-                                  Session active
-                                </span>
-                              ) : (
-                                <div className="inline-flex items-center gap-1.5">
+                                {/* Règle 3 : Activer ou désactiver tout en gardant la ligne visible */}
+                                <td className="py-3.5 px-4 whitespace-nowrap">
                                   <button
                                     type="button"
+                                    disabled={isSelf}
                                     onClick={() =>
                                       handleUpdateUserContract(u.id, 'isActive', !isMemberActive)
                                     }
-                                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
+                                    className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${
+                                      isMemberActive
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                        : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                    } disabled:opacity-60`}
                                   >
-                                    {isMemberActive ? 'Désactiver' : 'Réactiver'}
+                                    {isMemberActive ? 'Actif (Désactiver)' : 'Désactivé (Activer)'}
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteUser(u.id)}
-                                    className="px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50/70 hover:bg-rose-100 text-xs font-semibold text-rose-700 transition-colors"
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <select
+                                    value={u.role}
+                                    onChange={(e) =>
+                                      handleUpdateUserContract(u.id, 'role', e.target.value)
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-700 cursor-pointer"
                                   >
-                                    Supprimer
-                                  </button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                                    <option value="collaborator">Collaborateur</option>
+                                    <option value="manager">Manager</option>
+                                    <option value="hr">RH</option>
+                                  </select>
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <select
+                                    value={u.contractType}
+                                    onChange={(e) =>
+                                      handleUpdateUserContract(
+                                        u.id,
+                                        'contractType',
+                                        e.target.value
+                                      )
+                                    }
+                                    className={`px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
+                                      isUserForfait
+                                        ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    }`}
+                                  >
+                                    <option value="FORFAIT_JOURS">Cadre au Forfait Jours</option>
+                                    <option value="HOURLY">Horaire / Temps partiel</option>
+                                  </select>
+                                </td>
+
+                                {/* Règle 6 : Taux (%) + heures (mi-temps, temps partiel, 35h, 37h, 39h) */}
+                                <td className="py-3.5 px-4">
+                                  {isUserForfait ? (
+                                    <span className="text-xs text-slate-400 italic">
+                                      Forfait Jours
+                                    </span>
+                                  ) : (
+                                    <div className="space-y-1.5">
+                                      <div className="flex items-center gap-1 flex-wrap">
+                                        {[
+                                          { label: '50% (17,5h)', rate: 50, hours: 17.5 },
+                                          { label: '80% (28h)', rate: 80, hours: 28 },
+                                          { label: '35h', rate: 100, hours: 35 },
+                                          { label: '37h', rate: 100, hours: 37 },
+                                          { label: '39h', rate: 100, hours: 39 },
+                                        ].map((preset) => (
+                                          <button
+                                            key={preset.label}
+                                            type="button"
+                                            onClick={() => {
+                                              handleUpdateUserContract(
+                                                u.id,
+                                                'weeklyHours',
+                                                preset.hours
+                                              );
+                                              if (preset.rate < 100) {
+                                                handleUpdateUserContract(
+                                                  u.id,
+                                                  'workRate',
+                                                  preset.rate
+                                                );
+                                              }
+                                            }}
+                                            className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
+                                              Number(u.weeklyHours) === preset.hours
+                                                ? 'bg-slate-900 text-white border-slate-900'
+                                                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                            }`}
+                                          >
+                                            {preset.label}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="flex items-center gap-1">
+                                          <input
+                                            type="number"
+                                            min="10"
+                                            max="100"
+                                            step="5"
+                                            aria-label="Taux activité en pourcentage"
+                                            value={u.workRate ?? 100}
+                                            onChange={(e) =>
+                                              handleUpdateUserContract(
+                                                u.id,
+                                                'workRate',
+                                                e.target.value
+                                              )
+                                            }
+                                            className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs font-semibold"
+                                          />
+                                          <span className="text-xs text-slate-500">%</span>
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                          <input
+                                            type="number"
+                                            step="0.5"
+                                            min="1"
+                                            max="60"
+                                            aria-label="Heures par semaine"
+                                            value={u.weeklyHours}
+                                            onChange={(e) =>
+                                              handleUpdateUserContract(
+                                                u.id,
+                                                'weeklyHours',
+                                                e.target.value
+                                              )
+                                            }
+                                            className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs font-semibold"
+                                          />
+                                          <span className="text-xs text-slate-500">h/sem</span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  {isUserForfait ? (
+                                    <span className="text-xs text-slate-400 italic">—</span>
+                                  ) : (
+                                    <input
+                                      type="number"
+                                      step="15"
+                                      value={u.initialBalanceMinutes}
+                                      onChange={(e) =>
+                                        handleUpdateUserContract(
+                                          u.id,
+                                          'initialBalanceMinutes',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="w-20 px-2 py-1 rounded-lg border border-slate-200 text-xs"
+                                    />
+                                  )}
+                                </td>
+
+                                <td className="py-3.5 px-4 space-y-1">
+                                  <div className="flex items-center gap-1 text-xs">
+                                    <span className="w-8 text-slate-500">RTT:</span>
+                                    <input
+                                      type="number"
+                                      step="0.5"
+                                      min="0"
+                                      value={u.annualRttQuota}
+                                      onChange={(e) =>
+                                        handleUpdateUserContract(
+                                          u.id,
+                                          'annualRttQuota',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs"
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-1 text-xs">
+                                    <span className="w-8 text-slate-500">CP:</span>
+                                    <input
+                                      type="number"
+                                      step="0.5"
+                                      min="0"
+                                      value={u.annualCpQuota}
+                                      onChange={(e) =>
+                                        handleUpdateUserContract(
+                                          u.id,
+                                          'annualCpQuota',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs"
+                                    />
+                                  </div>
+                                </td>
+
+                                {/* Règle 3 : Suppression de ligne collaborateur par la RH */}
+                                <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                                  {isSelf ? (
+                                    <span className="text-xs text-slate-400 italic">
+                                      Session RH active
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteUser(u.id)}
+                                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50/70 hover:bg-rose-100 text-xs font-semibold text-rose-700 transition-colors"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      Supprimer
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </main>
