@@ -21,12 +21,14 @@ import {
   Sparkles,
   MapPin,
   Mail,
-  UserPlus,
   Users,
   Lock,
   Unlock,
   LogOut,
   Trash2,
+  Download,
+  KeyRound,
+  Sliders,
 } from 'lucide-react';
 
 // --- CLÉS DE STOCKAGE LOCAL ---
@@ -269,6 +271,7 @@ export default function App() {
 
   // Écran de connexion / initialisation
   const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [initName, setInitName] = useState('');
   const [initRole, setInitRole] = useState('hr');
   const [initContractType, setInitContractType] = useState('FORFAIT_JOURS');
@@ -280,6 +283,7 @@ export default function App() {
   const [newMember, setNewMember] = useState({
     name: '',
     email: '',
+    password: '',
     jobTitle: 'Collaborateur',
     role: 'collaborator',
     departmentId: '',
@@ -288,6 +292,7 @@ export default function App() {
     weeklyHours: 35,
     annualRttQuota: 12,
     annualCpQuota: 25,
+    accumulatedCpQuota: 0,
     entryDate: formatDateISO(new Date()),
     exitDate: '',
     isActive: true,
@@ -300,11 +305,14 @@ export default function App() {
   });
 
   // Navigation & Filtres
+  const [selectedTimesheetDeptId, setSelectedTimesheetDeptId] = useState('ALL');
   const [selectedTimesheetUserId, setSelectedTimesheetUserId] = useState(null);
   const [requestStatusFilter, setRequestStatusFilter] = useState('ALL');
   const [showInactiveMembers, setShowInactiveMembers] = useState(true);
   const [departmentFilter, setDepartmentFilter] = useState('ALL');
   const [activeTab, setActiveTab] = useState('timesheet');
+  const [overviewPeriod, setOverviewPeriod] = useState('week');
+  const [selectedDayIso, setSelectedDayIso] = useState(() => formatDateISO(new Date()));
   const [currentWeekStart, setCurrentWeekStart] = useState(() => getMondayOfWeek(new Date()));
   const [includeWeekend, setIncludeWeekend] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -385,29 +393,43 @@ export default function App() {
 
   const visibleTimesheetUsers = useMemo(() => {
     if (!activeUser) return [];
-    if (isHR) return users;
+    if (isHR) {
+      if (selectedTimesheetDeptId === 'ALL') return users;
+      if (selectedTimesheetDeptId === 'NONE') {
+        return users.filter((u) => !u.departmentId);
+      }
+      return users.filter((u) => u.departmentId === selectedTimesheetDeptId);
+    }
     if (isManager) {
       const managedDeptIds = departments
         .filter((d) => d.managerId === activeUser.id)
         .map((d) => d.id);
-      return users.filter(
-        (u) =>
-          u.id === activeUser.id ||
-          (u.departmentId && managedDeptIds.includes(u.departmentId))
+      const hasExplicitDeptAssignments = users.some(
+        (u) => u.departmentId && managedDeptIds.includes(u.departmentId)
       );
+
+      if (managedDeptIds.length > 0 && hasExplicitDeptAssignments) {
+        return users.filter(
+          (u) =>
+            u.id === activeUser.id ||
+            (u.departmentId && managedDeptIds.includes(u.departmentId))
+        );
+      }
+      return users;
     }
     return [activeUser];
-  }, [activeUser, isHR, isManager, users, departments]);
+  }, [activeUser, isHR, isManager, users, departments, selectedTimesheetDeptId]);
 
   useEffect(() => {
     if (!activeUser) return;
     if (!canManageTeam) {
       setSelectedTimesheetUserId(activeUser.id);
     } else if (
-      !selectedTimesheetUserId ||
-      !visibleTimesheetUsers.some((u) => u.id === selectedTimesheetUserId)
+      visibleTimesheetUsers.length > 0 &&
+      (!selectedTimesheetUserId ||
+        !visibleTimesheetUsers.some((u) => u.id === selectedTimesheetUserId))
     ) {
-      setSelectedTimesheetUserId(activeUser.id);
+      setSelectedTimesheetUserId(visibleTimesheetUsers[0].id);
     }
   }, [activeUser, canManageTeam, selectedTimesheetUserId, visibleTimesheetUsers]);
 
@@ -415,7 +437,9 @@ export default function App() {
     if (!activeUser) return null;
     if (!canManageTeam) return activeUser;
     return (
-      visibleTimesheetUsers.find((u) => u.id === selectedTimesheetUserId) || activeUser
+      visibleTimesheetUsers.find((u) => u.id === selectedTimesheetUserId) ||
+      visibleTimesheetUsers[0] ||
+      activeUser
     );
   }, [canManageTeam, activeUser, visibleTimesheetUsers, selectedTimesheetUserId]);
 
@@ -432,6 +456,10 @@ export default function App() {
     }
 
     if (isInitialSetup) {
+      if (!loginPassword || loginPassword.length < 4) {
+        setFormError('Veuillez définir un mot de passe d’au moins 4 caractères.');
+        return;
+      }
       const isForfait = initContractType === 'FORFAIT_JOURS';
       const parsedRate = isForfait
         ? 100
@@ -447,6 +475,7 @@ export default function App() {
       const firstUser = {
         id: `user-${Date.now()}`,
         email: normalizedEmail,
+        password: loginPassword,
         name: displayName,
         role: initRole,
         departmentId: '',
@@ -458,8 +487,10 @@ export default function App() {
         weeklyHours: parsedHours,
         dailyHours: isForfait ? 0 : Number((parsedHours / 5).toFixed(2)),
         initialBalanceMinutes: 0,
+        manualRttAdjustment: 0,
         annualRttQuota: isForfait ? 12 : 0,
         annualCpQuota: 25,
+        accumulatedCpQuota: 0,
         entryDate: formatDateISO(new Date()),
         exitDate: '',
         isActive: true,
@@ -469,6 +500,7 @@ export default function App() {
       setCurrentUserId(firstUser.id);
       setSelectedTimesheetUserId(firstUser.id);
       setLoginEmail('');
+      setLoginPassword('');
       setInitName('');
       showToast(`Compte ${firstUser.name} initialisé.`);
       return;
@@ -489,10 +521,22 @@ export default function App() {
       return;
     }
 
+    if (existing.password && existing.password !== loginPassword) {
+      setFormError('Mot de passe incorrect.');
+      return;
+    }
+
+    if (!existing.password && loginPassword) {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === existing.id ? { ...u, password: loginPassword } : u))
+      );
+    }
+
     setCurrentUserId(existing.id);
     setSelectedTimesheetUserId(existing.id);
     setActiveTab('timesheet');
     setLoginEmail('');
+    setLoginPassword('');
     showToast(`Bienvenue ${existing.name}.`);
   };
 
@@ -509,6 +553,9 @@ export default function App() {
         }
         if (field === 'jobTitle') {
           return { ...u, jobTitle: value };
+        }
+        if (field === 'password') {
+          return { ...u, password: value };
         }
         return u;
       })
@@ -628,6 +675,7 @@ export default function App() {
     const created = {
       id: `user-${Date.now()}`,
       email: normalizedEmail,
+      password: newMember.password.trim(),
       name: cleanName,
       role: effectiveRole,
       departmentId: effectiveDeptId,
@@ -645,8 +693,10 @@ export default function App() {
       weeklyHours: effectiveHours,
       dailyHours: isForfait ? 0 : Number((effectiveHours / 5).toFixed(2)),
       initialBalanceMinutes: 0,
+      manualRttAdjustment: 0,
       annualRttQuota: isForfait ? Number(newMember.annualRttQuota) || 12 : 0,
       annualCpQuota: Number(newMember.annualCpQuota) || 25,
+      accumulatedCpQuota: Number(newMember.accumulatedCpQuota) || 0,
       entryDate: newMember.entryDate || formatDateISO(new Date()),
       exitDate: newMember.exitDate || '',
       isActive: Boolean(newMember.isActive),
@@ -656,6 +706,7 @@ export default function App() {
     setNewMember({
       name: '',
       email: '',
+      password: '',
       jobTitle: 'Collaborateur',
       role: 'collaborator',
       departmentId: '',
@@ -664,6 +715,7 @@ export default function App() {
       weeklyHours: 35,
       annualRttQuota: 12,
       annualCpQuota: 25,
+      accumulatedCpQuota: 0,
       entryDate: formatDateISO(new Date()),
       exitDate: '',
       isActive: true,
@@ -738,45 +790,42 @@ export default function App() {
           return {
             status: 'HOLIDAY',
             isRemote: false,
+            isValidated: Boolean(timeLogs[key].isValidated),
             morningStart: '',
             morningEnd: '',
             afternoonStart: '',
             afternoonEnd: '',
-            isValidated: Boolean(timeLogs[key].isValidated),
           };
         }
-        return {
-          ...timeLogs[key],
-          isValidated: Boolean(timeLogs[key].isValidated),
-        };
+        return timeLogs[key];
       }
       if (holidayName) {
         return {
           status: 'HOLIDAY',
           isRemote: false,
+          isValidated: false,
           morningStart: '',
           morningEnd: '',
           afternoonStart: '',
           afternoonEnd: '',
-          isValidated: false,
         };
       }
       return {
         status: 'WORKED',
         isRemote: false,
+        isValidated: false,
         morningStart: '',
         morningEnd: '',
         afternoonStart: '',
         afternoonEnd: '',
-        isValidated: false,
       };
     },
     [timeLogs, getHolidayName]
   );
 
   const isWeekFullyValidated = useMemo(() => {
-    if (!inspectedUser) return false;
-    return weekDays.every((day) => getDayEntry(inspectedUser.id, day.iso).isValidated);
+    if (!inspectedUser || weekDays.length === 0) return false;
+    return weekDays.every((d) => Boolean(getDayEntry(inspectedUser.id, d.iso).isValidated));
   }, [inspectedUser, weekDays, getDayEntry]);
 
   const currentWeekStats = useMemo(() => {
@@ -865,6 +914,156 @@ export default function App() {
     };
   }, [inspectedUser, currentWeekStart, getDayEntry]);
 
+  // Aperçu multi-échelles (Quotidien / Hebdomadaire / Mensuel / Annuel)
+  const periodOverviewStats = useMemo(() => {
+    if (!inspectedUser) {
+      return {
+        label: 'Semaine',
+        workedMinutes: 0,
+        assimilatedMinutes: 0,
+        totalAccountedMinutes: 0,
+        targetMinutes: 0,
+        deltaMinutes: 0,
+        workedDaysCount: 0,
+        remoteDaysCount: 0,
+        cpDaysCount: 0,
+        rttDaysCount: 0,
+      };
+    }
+
+    const dailyTheoreticalMinutes = Math.round((inspectedUser.dailyHours || 0) * 60);
+    const baseDate =
+      overviewPeriod === 'day'
+        ? parseDateISO(selectedDayIso)
+        : overviewPeriod === 'month'
+        ? new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1)
+        : currentWeekStart;
+
+    let datesToEvaluate = [];
+    let label = '';
+
+    if (overviewPeriod === 'day') {
+      datesToEvaluate = [baseDate];
+      label = `Quotidien (${baseDate.toLocaleDateString('fr-FR', {
+        weekday: 'long',
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric',
+      })})`;
+    } else if (overviewPeriod === 'week') {
+      const count = includeWeekend ? 7 : 5;
+      datesToEvaluate = Array.from({ length: count }, (_, idx) => addDays(currentWeekStart, idx));
+      label = `Hebdomadaire (semaine du ${currentWeekStart.toLocaleDateString('fr-FR', {
+        day: '2-digit',
+        month: 'short',
+      })})`;
+    } else if (overviewPeriod === 'month') {
+      const y = calendarMonth.getFullYear();
+      const m = calendarMonth.getMonth();
+      const daysCount = new Date(y, m + 1, 0).getDate();
+      datesToEvaluate = Array.from({ length: daysCount }, (_, idx) => new Date(y, m, idx + 1));
+      label = `Mensuel (${calendarMonth.toLocaleDateString('fr-FR', {
+        month: 'long',
+        year: 'numeric',
+      })})`;
+    } else {
+      const y = currentWeekStart.getFullYear();
+      const startOfYear = new Date(y, 0, 1);
+      const endOfYear = new Date(y, 11, 31);
+      const diffDays = Math.round((endOfYear - startOfYear) / (1000 * 60 * 60 * 24)) + 1;
+      datesToEvaluate = Array.from({ length: diffDays }, (_, idx) => addDays(startOfYear, idx));
+      label = `Annuel (année ${y})`;
+    }
+
+    let workedMinutes = 0;
+    let assimilatedMinutes = 0;
+    let workedDaysCount = 0;
+    let remoteDaysCount = 0;
+    let cpDaysCount = 0;
+    let rttDaysCount = 0;
+    let workingWeekdaysCount = 0;
+
+    datesToEvaluate.forEach((d) => {
+      const dow = d.getDay();
+      const isWeekend = dow === 0 || dow === 6;
+      const iso = formatDateISO(d);
+      const entry = getDayEntry(inspectedUser.id, iso);
+      const statusMeta = DAY_STATUSES[entry.status] || DAY_STATUSES.WORKED;
+
+      if (!isWeekend) {
+        workingWeekdaysCount += 1;
+      }
+
+      if (inspectedUser.contractType === 'FORFAIT_JOURS') {
+        if (!isWeekend) {
+          if (entry.status === 'WORKED') {
+            workedDaysCount += 1;
+            if (entry.isRemote) remoteDaysCount += 1;
+          } else if (entry.status === 'REMOTE') {
+            workedDaysCount += 1;
+            remoteDaysCount += 1;
+          } else if (entry.status === 'HALF_DAY') {
+            workedDaysCount += 0.5;
+            if (entry.isRemote) remoteDaysCount += 0.5;
+          } else if (entry.status === 'CP') {
+            cpDaysCount += 1;
+          } else if (entry.status === 'RTT') {
+            rttDaysCount += 1;
+          }
+        }
+      } else {
+        if (entry.status === 'WORKED' || entry.status === 'REMOTE') {
+          const mins = calculateDayWorkedMinutes(entry);
+          workedMinutes += mins;
+          if (!isWeekend && mins > 0) {
+            workedDaysCount += 1;
+            if (entry.isRemote || entry.status === 'REMOTE') remoteDaysCount += 1;
+          }
+        } else if (entry.status === 'HALF_DAY') {
+          const mins = calculateDayWorkedMinutes(entry);
+          workedMinutes += mins > 0 ? mins : Math.round(dailyTheoreticalMinutes / 2);
+          if (!isWeekend) {
+            workedDaysCount += 0.5;
+            if (entry.isRemote) remoteDaysCount += 0.5;
+          }
+        } else if (statusMeta.countsAsTheoretical && !isWeekend) {
+          assimilatedMinutes += dailyTheoreticalMinutes;
+        }
+      }
+    });
+
+    const totalAccountedMinutes = workedMinutes + assimilatedMinutes;
+    const targetMinutes =
+      overviewPeriod === 'day'
+        ? dailyTheoreticalMinutes
+        : overviewPeriod === 'week'
+        ? Math.round((inspectedUser.weeklyHours || 0) * 60)
+        : workingWeekdaysCount * dailyTheoreticalMinutes;
+
+    const deltaMinutes = totalAccountedMinutes - targetMinutes;
+
+    return {
+      label,
+      workedMinutes,
+      assimilatedMinutes,
+      totalAccountedMinutes,
+      targetMinutes,
+      deltaMinutes,
+      workedDaysCount,
+      remoteDaysCount,
+      cpDaysCount,
+      rttDaysCount,
+    };
+  }, [
+    inspectedUser,
+    overviewPeriod,
+    selectedDayIso,
+    calendarMonth,
+    currentWeekStart,
+    includeWeekend,
+    getDayEntry,
+  ]);
+
   const globalStats = useMemo(() => {
     if (!inspectedUser) {
       return {
@@ -872,49 +1071,61 @@ export default function App() {
         totalWorkedDays: 0,
         totalRemoteDays: 0,
         totalRttTaken: 0,
+        totalRttAvailable: 0,
         remainingRtt: 0,
         totalCpTaken: 0,
+        totalCpAvailable: 0,
         remainingCp: 0,
       };
     }
 
+    let totalWorkedDays = 0;
+    let totalRemoteDays = 0;
+    let totalRttTaken = 0;
+    let totalCpTaken = 0;
+
+    Object.entries(timeLogs).forEach(([key, entry]) => {
+      if (!key.startsWith(`${inspectedUser.id}_`)) return;
+      const dateStr = key.split('_')[1];
+      const d = parseDateISO(dateStr);
+      const dow = d.getDay();
+      if (dow === 0 || dow === 6) return;
+
+      if (entry.status === 'WORKED') {
+        totalWorkedDays += 1;
+        if (entry.isRemote) totalRemoteDays += 1;
+      } else if (entry.status === 'REMOTE') {
+        totalWorkedDays += 1;
+        totalRemoteDays += 1;
+      } else if (entry.status === 'HALF_DAY') {
+        totalWorkedDays += 0.5;
+        if (entry.isRemote) totalRemoteDays += 0.5;
+      } else if (entry.status === 'RTT') {
+        totalRttTaken += 1;
+      } else if (entry.status === 'CP') {
+        totalCpTaken += 1;
+      }
+    });
+
+    const totalCpAvailable =
+      (Number(inspectedUser.annualCpQuota) || 0) +
+      (Number(inspectedUser.accumulatedCpQuota) || 0);
+
+    const totalRttAvailable =
+      (Number(inspectedUser.annualRttQuota) || 0) +
+      (Number(inspectedUser.manualRttAdjustment) || 0);
+
     if (inspectedUser.contractType === 'FORFAIT_JOURS') {
-      let totalWorkedDays = 0;
-      let totalRemoteDays = 0;
-      let totalRttTaken = 0;
-      let totalCpTaken = 0;
-
-      Object.entries(timeLogs).forEach(([key, entry]) => {
-        if (!key.startsWith(`${inspectedUser.id}_`)) return;
-        const dateStr = key.split('_')[1];
-        const d = parseDateISO(dateStr);
-        const dow = d.getDay();
-        if (dow === 0 || dow === 6) return;
-
-        if (entry.status === 'WORKED') {
-          totalWorkedDays += 1;
-          if (entry.isRemote) totalRemoteDays += 1;
-        } else if (entry.status === 'REMOTE') {
-          totalWorkedDays += 1;
-          totalRemoteDays += 1;
-        } else if (entry.status === 'HALF_DAY') {
-          totalWorkedDays += 0.5;
-          if (entry.isRemote) totalRemoteDays += 0.5;
-        } else if (entry.status === 'RTT') {
-          totalRttTaken += 1;
-        } else if (entry.status === 'CP') {
-          totalCpTaken += 1;
-        }
-      });
-
       return {
         cumulativeMinutes: 0,
         totalWorkedDays,
         totalRemoteDays,
         totalRttTaken,
-        remainingRtt: Math.max(0, (inspectedUser.annualRttQuota || 0) - totalRttTaken),
+        totalRttAvailable,
+        remainingRtt: Math.max(0, totalRttAvailable - totalRttTaken),
         totalCpTaken,
-        remainingCp: Math.max(0, (inspectedUser.annualCpQuota || 25) - totalCpTaken),
+        totalCpAvailable,
+        remainingCp: Math.max(0, totalCpAvailable - totalCpTaken),
       };
     }
 
@@ -970,14 +1181,205 @@ export default function App() {
 
     return {
       cumulativeMinutes: inspectedUser.initialBalanceMinutes + cumulativeDelta,
-      totalWorkedDays: 0,
-      totalRemoteDays: 0,
-      totalRttTaken: 0,
-      remainingRtt: 0,
-      totalCpTaken: 0,
-      remainingCp: 0,
+      totalWorkedDays,
+      totalRemoteDays,
+      totalRttTaken,
+      totalRttAvailable,
+      remainingRtt: Math.max(0, totalRttAvailable - totalRttTaken),
+      totalCpTaken,
+      totalCpAvailable,
+      remainingCp: Math.max(0, totalCpAvailable - totalCpTaken),
     };
   }, [inspectedUser, timeLogs, currentWeekStart, getDayEntry, getHolidayName]);
+
+  // --- FONCTIONS D'EXPORT EXCEL (CSV UTF-8 AVEC BOM POUR EXCEL) ---
+  const downloadExcelCsv = useCallback(
+    (filename, headers, rows) => {
+      const escapeCell = (val) => {
+        const str = val === null || val === undefined ? '' : String(val);
+        if (str.includes(';') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      };
+      const csvLines = [
+        headers.map(escapeCell).join(';'),
+        ...rows.map((r) => r.map(escapeCell).join(';')),
+      ];
+      const blob = new Blob(['\uFEFF' + csvLines.join('\n')], {
+        type: 'text/csv;charset=utf-8;',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showToast(`Export Excel généré : ${filename}`);
+    },
+    [showToast]
+  );
+
+  const handleExportCurrentTimesheetExcel = () => {
+    if (!inspectedUser) return;
+    const dept = departments.find((d) => d.id === inspectedUser.departmentId);
+    const headers = [
+      'Collaborateur',
+      'Email',
+      'Équipe',
+      'Contrat',
+      'Date',
+      'Jour',
+      'Statut',
+      'Télétravail',
+      'Arrivée Matin',
+      'Départ Midi',
+      'Reprise Après-midi',
+      'Départ Soir',
+      'Total Comptabilisé',
+      'Validé',
+    ];
+
+    const dailyTheoreticalMinutes = Math.round((inspectedUser.dailyHours || 0) * 60);
+    const rows = weekDays.map((day) => {
+      const entry = getDayEntry(inspectedUser.id, day.iso);
+      const statusMeta = DAY_STATUSES[entry.status] || DAY_STATUSES.WORKED;
+      let totalLabel = '';
+      if (inspectedUser.contractType === 'FORFAIT_JOURS') {
+        totalLabel =
+          entry.status === 'HALF_DAY'
+            ? '0,5 jour'
+            : entry.status === 'WORKED' || entry.status === 'REMOTE'
+            ? '1 jour'
+            : statusMeta.label;
+      } else {
+        let mins = 0;
+        if (
+          entry.status === 'WORKED' ||
+          entry.status === 'REMOTE' ||
+          entry.status === 'HALF_DAY'
+        ) {
+          mins = calculateDayWorkedMinutes(entry);
+        } else if (statusMeta.countsAsTheoretical && !day.isWeekend) {
+          mins = dailyTheoreticalMinutes;
+        }
+        totalLabel = formatMinutesToHM(mins, false);
+      }
+
+      return [
+        inspectedUser.name,
+        inspectedUser.email,
+        dept?.name || 'Aucune équipe',
+        inspectedUser.contractType === 'FORFAIT_JOURS'
+          ? 'Forfait Jours'
+          : `${inspectedUser.workRate || 100}% (${inspectedUser.weeklyHours}h)`,
+        day.iso,
+        day.dayName,
+        statusMeta.label,
+        entry.isRemote || entry.status === 'REMOTE' ? 'Oui' : 'Non',
+        entry.morningStart || '',
+        entry.morningEnd || '',
+        entry.afternoonStart || '',
+        entry.afternoonEnd || '',
+        totalLabel,
+        entry.isValidated ? 'Oui' : 'Non',
+      ];
+    });
+
+    const safeName = inspectedUser.name.toLowerCase().replace(/\s+/g, '_');
+    downloadExcelCsv(
+      `feuille_temps_${safeName}_${formatDateISO(currentWeekStart)}.csv`,
+      headers,
+      rows
+    );
+  };
+
+  const handleExportSharedCalendarExcel = () => {
+    const headers = [
+      'Collaborateur',
+      'Équipe',
+      'Contrat',
+      ...monthDays.map((d) => `${d.dayInitial} ${d.dayNumber}`),
+    ];
+
+    const rows = filteredCalendarUsers.map((u) => {
+      const dept = departments.find((d) => d.id === u.departmentId);
+      const dayCells = monthDays.map((d) => {
+        if (d.isWeekend) return 'WE';
+        if (d.holidayName) return `Férié (${d.holidayName})`;
+        const entry = getDayEntry(u.id, d.iso);
+        if (entry.status === 'CP') return 'CP';
+        if (entry.status === 'RTT') return 'RTT';
+        if (entry.status === 'SICK') return 'Maladie';
+        if (entry.status === 'OFF') return 'Absence';
+        if (entry.status === 'HALF_DAY') return 'Demi-journée';
+        if (entry.isRemote || entry.status === 'REMOTE') return 'Télétravail';
+        return 'Présentiel';
+      });
+      return [
+        u.name,
+        dept?.name || 'Aucune',
+        u.contractType === 'FORFAIT_JOURS' ? 'Forfait Jours' : `${u.weeklyHours}h`,
+        ...dayCells,
+      ];
+    });
+
+    const monthSlug = `${calendarMonth.getFullYear()}-${String(
+      calendarMonth.getMonth() + 1
+    ).padStart(2, '0')}`;
+    downloadExcelCsv(`calendrier_equipe_${monthSlug}.csv`, headers, rows);
+  };
+
+  const handleExportAllHrDataExcel = () => {
+    const headers = [
+      'Collaborateur',
+      'Email',
+      'Équipe',
+      'Manager',
+      'Rôle',
+      'Statut Compte',
+      'Date Entrée',
+      'Date Sortie',
+      'Contrat',
+      'Taux (%)',
+      'Heures Hebdo',
+      'Ajustement Compteur Heures (min)',
+      'RTT Annuel (j)',
+      'Ajustement RTT (j)',
+      'CP Annuel (j)',
+      'CP Cumulés (j)',
+      'Total CP Disponibles (j)',
+    ];
+
+    const rows = users.map((u) => {
+      const dept = departments.find((d) => d.id === u.departmentId);
+      const mgr = users.find((m) => m.id === dept?.managerId);
+      const totalCp = (Number(u.annualCpQuota) || 0) + (Number(u.accumulatedCpQuota) || 0);
+      return [
+        u.name,
+        u.email,
+        dept?.name || 'Aucune',
+        mgr?.name || 'Aucun',
+        u.role === 'hr' ? 'RH' : u.role === 'manager' ? 'Manager' : 'Collaborateur',
+        u.isActive === false ? 'Désactivé' : 'Actif',
+        u.entryDate || '',
+        u.exitDate || '',
+        u.contractType === 'FORFAIT_JOURS' ? 'Forfait Jours' : 'Contrat Horaire',
+        u.workRate ?? 100,
+        u.weeklyHours ?? 0,
+        u.initialBalanceMinutes ?? 0,
+        u.annualRttQuota ?? 0,
+        u.manualRttAdjustment ?? 0,
+        u.annualCpQuota ?? 0,
+        u.accumulatedCpQuota ?? 0,
+        totalCp,
+      ];
+    });
+
+    downloadExcelCsv(`export_rh_collaborateurs_${formatDateISO(new Date())}.csv`, headers, rows);
+  };
 
   const handleUpdateTimeLog = (dateIso, field, value) => {
     if (!inspectedUser) return;
@@ -1240,6 +1642,8 @@ export default function App() {
       updatedFields = { name: value, avatar: buildInitials(value) };
     } else if (field === 'email') {
       updatedFields = { email: value.trim().toLowerCase() };
+    } else if (field === 'password') {
+      updatedFields = { password: value };
     } else if (field === 'entryDate') {
       updatedFields = { entryDate: value };
     } else if (field === 'exitDate') {
@@ -1277,10 +1681,14 @@ export default function App() {
         };
       } else if (field === 'initialBalanceMinutes') {
         updatedFields = { initialBalanceMinutes: Math.round(numVal) };
+      } else if (field === 'manualRttAdjustment') {
+        updatedFields = { manualRttAdjustment: numVal };
       } else if (field === 'annualRttQuota') {
         updatedFields = { annualRttQuota: Math.max(0, numVal) };
       } else if (field === 'annualCpQuota') {
         updatedFields = { annualCpQuota: Math.max(0, numVal) };
+      } else if (field === 'accumulatedCpQuota') {
+        updatedFields = { accumulatedCpQuota: Math.max(0, numVal) };
       }
     }
 
@@ -1364,6 +1772,27 @@ export default function App() {
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
                   placeholder="prenom.nom@entreprise.fr"
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Mot de passe *
+              </label>
+              <div className="relative">
+                <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder={
+                    isInitialSetup
+                      ? 'Choisissez votre mot de passe (min. 4 caractères)'
+                      : 'Votre mot de passe (ou choisissez-en un à la 1ère connexion)'
+                  }
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
                 />
               </div>
@@ -1618,7 +2047,7 @@ export default function App() {
             >
               <FileText className="w-4 h-4" />
               <span>Congés & Télétravail</span>
-              {canManageTeam && pendingRequestsCount > 0 && (
+              {pendingRequestsCount > 0 && (
                 <span className="ml-1 px-2 py-0.5 text-xs font-bold rounded-full bg-amber-100 text-amber-800">
                   {pendingRequestsCount}
                 </span>
@@ -1636,11 +2065,7 @@ export default function App() {
                 }`}
               >
                 <Users className="w-4 h-4" />
-                <span>
-                  {isHR
-                    ? 'RH : Équipes, Contrats & Comptes'
-                    : 'Création de comptes collaborateurs'}
-                </span>
+                <span>{isHR ? 'Équipes, Contrats & RH' : 'Création de comptes'}</span>
               </button>
             )}
           </nav>
@@ -1648,7 +2073,8 @@ export default function App() {
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        {/* Bandeau Mon Profil (édition directe nom, email, poste et mot de passe) */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span
               className={`w-10 h-10 rounded-full ${activeUser.color} text-white text-xs font-bold flex items-center justify-center shrink-0`}
@@ -1658,12 +2084,12 @@ export default function App() {
             <div>
               <div className="text-xs font-bold text-slate-900">Mon profil</div>
               <div className="text-[11px] text-slate-500">
-                Informations personnelles de votre session
+                Modifiez directement vos informations et votre mot de passe
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 flex-1 max-w-3xl">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 flex-1 max-w-4xl">
             <input
               type="text"
               aria-label="Mon nom complet"
@@ -1688,48 +2114,160 @@ export default function App() {
               placeholder="Intitulé du poste"
               className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
+            <input
+              type="password"
+              aria-label="Mon mot de passe"
+              value={activeUser.password || ''}
+              onChange={(e) => handleUpdateOwnProfile('password', e.target.value)}
+              placeholder="Mon mot de passe de connexion"
+              className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
           </div>
         </div>
 
         {canManageTeam && activeTab === 'timesheet' && (
-          <div className="bg-indigo-50/80 border border-indigo-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="bg-indigo-50/80 border border-indigo-200/80 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-sm text-indigo-950">
               <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
               <span>
                 Mode <strong>{isHR ? 'RH' : 'Manager'}</strong> :{' '}
                 {isHR
-                  ? 'consultez, modifiez ou déverrouillez les horaires de tous les collaborateurs.'
+                  ? 'sélectionnez une équipe puis le collaborateur souhaité pour consulter ou ajuster sa feuille de temps.'
                   : 'consultez, modifiez ou déverrouillez les horaires des collaborateurs rattachés à vos équipes.'}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <label htmlFor="select-collab" className="text-xs font-semibold text-indigo-900">
-                Feuille de temps de :
-              </label>
-              <select
-                id="select-collab"
-                value={inspectedUser?.id || ''}
-                onChange={(e) => setSelectedTimesheetUserId(e.target.value)}
-                className="bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                {visibleTimesheetUsers.map((u) => {
-                  const dept = departments.find((d) => d.id === u.departmentId);
-                  return (
-                    <option key={u.id} value={u.id}>
-                      {u.name} {dept ? `[${dept.name}]` : ''} —{' '}
-                      {u.contractType === 'FORFAIT_JOURS'
-                        ? 'Cadre (Forfait Jours)'
-                        : `${u.workRate || 100}% • ${u.weeklyHours}h / sem`}
+            <div className="flex flex-wrap items-center gap-2">
+              {isHR && (
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor="select-hr-dept" className="text-xs font-semibold text-indigo-900">
+                    1. Équipe :
+                  </label>
+                  <select
+                    id="select-hr-dept"
+                    value={selectedTimesheetDeptId}
+                    onChange={(e) => {
+                      const nextDept = e.target.value;
+                      setSelectedTimesheetDeptId(nextDept);
+                      const matchingUsers =
+                        nextDept === 'ALL'
+                          ? users
+                          : nextDept === 'NONE'
+                          ? users.filter((u) => !u.departmentId)
+                          : users.filter((u) => u.departmentId === nextDept);
+                      if (matchingUsers.length > 0) {
+                        setSelectedTimesheetUserId(matchingUsers[0].id);
+                      }
+                    }}
+                    className="bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="ALL">Toutes les équipes ({users.length})</option>
+                    {departments.map((d) => {
+                      const count = users.filter((u) => u.departmentId === d.id).length;
+                      return (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({count})
+                        </option>
+                      );
+                    })}
+                    <option value="NONE">
+                      Sans équipe ({users.filter((u) => !u.departmentId).length})
                     </option>
-                  );
-                })}
-              </select>
+                  </select>
+                </div>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="select-collab" className="text-xs font-semibold text-indigo-900">
+                  {isHR ? '2. Collaborateur :' : 'Feuille de temps de :'}
+                </label>
+                <select
+                  id="select-collab"
+                  value={inspectedUser?.id || ''}
+                  onChange={(e) => setSelectedTimesheetUserId(e.target.value)}
+                  className="bg-white border border-indigo-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {visibleTimesheetUsers.map((u) => {
+                    const dept = departments.find((d) => d.id === u.departmentId);
+                    return (
+                      <option key={u.id} value={u.id}>
+                        {u.name} {dept ? `[${dept.name}]` : ''} —{' '}
+                        {u.contractType === 'FORFAIT_JOURS'
+                          ? 'Cadre (Forfait Jours)'
+                          : `${u.workRate || 100}% • ${u.weeklyHours}h / sem`}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
             </div>
           </div>
         )}
 
         {activeTab === 'timesheet' && inspectedUser && (
           <div className="space-y-6">
+            {/* Barre d'aperçu Quotidien / Hebdomadaire / Mensuel / Annuel */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 mr-1">
+                  Aperçu :
+                </span>
+                {[
+                  { id: 'day', label: 'Quotidien' },
+                  { id: 'week', label: 'Hebdomadaire' },
+                  { id: 'month', label: 'Mensuel' },
+                  { id: 'year', label: 'Annuel' },
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setOverviewPeriod(p.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
+                      overviewPeriod === p.id
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+                {overviewPeriod === 'day' && (
+                  <input
+                    type="date"
+                    aria-label="Date de l'aperçu quotidien"
+                    value={selectedDayIso}
+                    onChange={(e) => setSelectedDayIso(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800"
+                  />
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <div className="text-slate-600">
+                  Période : <strong className="text-slate-900">{periodOverviewStats.label}</strong>
+                </div>
+                {isForfaitJours ? (
+                  <div className="px-3 py-1 rounded-xl bg-indigo-50 text-indigo-900 border border-indigo-200 font-bold">
+                    {periodOverviewStats.workedDaysCount} j travaillés ({periodOverviewStats.remoteDaysCount} j TT) • {periodOverviewStats.cpDaysCount} j CP • {periodOverviewStats.rttDaysCount} j RTT
+                  </div>
+                ) : (
+                  <div className="px-3 py-1 rounded-xl bg-slate-100 text-slate-900 border border-slate-200 font-bold">
+                    {formatMinutesToHM(periodOverviewStats.totalAccountedMinutes, false)} /{' '}
+                    {formatMinutesToHM(periodOverviewStats.targetMinutes, false)} (
+                    <span
+                      className={
+                        periodOverviewStats.deltaMinutes >= 0
+                          ? 'text-emerald-700'
+                          : 'text-rose-700'
+                      }
+                    >
+                      {formatMinutesToHM(periodOverviewStats.deltaMinutes, true)}
+                    </span>
+                    )
+                  </div>
+                )}
+              </div>
+            </div>
+
             {isForfaitJours ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
@@ -1745,49 +2283,51 @@ export default function App() {
 
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
                   <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                    <span>Jours Travaillés (Semaine)</span>
+                    <span>Jours Travaillés ({periodOverviewStats.label.split(' ')[0]})</span>
                     <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   </div>
                   <div className="text-2xl font-bold text-slate-900">
-                    {currentWeekStats.workedDaysCount}{' '}
+                    {periodOverviewStats.workedDaysCount}{' '}
                     <span className="text-sm font-normal text-slate-500">
-                      j ({currentWeekStats.remoteDaysCount} j TT)
+                      j ({periodOverviewStats.remoteDaysCount} j TT)
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    Cumul enregistré : <strong>{globalStats.totalWorkedDays} j</strong>
+                    Cumul total : <strong>{globalStats.totalWorkedDays} j</strong>
                   </p>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
                   <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                    <span>RTT Cadre Restants</span>
+                    <span>RTT Annuels Disponibles</span>
                     <Award className="w-4 h-4 text-amber-500" />
                   </div>
                   <div className="text-2xl font-bold text-slate-900">
                     {globalStats.remainingRtt}{' '}
                     <span className="text-sm font-normal text-slate-500">
-                      / {inspectedUser.annualRttQuota} j
+                      / {globalStats.totalRttAvailable} j
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    {globalStats.totalRttTaken} j pris sur l’exercice
+                    {globalStats.totalRttTaken} j pris sur {globalStats.totalRttAvailable} j
+                    disponibles
                   </p>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
                   <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                    <span>Congés Payés Restants</span>
+                    <span>Congés Payés (Annuel + Cumulés)</span>
                     <SunMedium className="w-4 h-4 text-sky-500" />
                   </div>
                   <div className="text-2xl font-bold text-slate-900">
                     {globalStats.remainingCp}{' '}
                     <span className="text-sm font-normal text-slate-500">
-                      / {inspectedUser.annualCpQuota} j
+                      / {globalStats.totalCpAvailable} j
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    {globalStats.totalCpTaken} j pris sur l’exercice
+                    {inspectedUser.annualCpQuota} j annuel + {inspectedUser.accumulatedCpQuota || 0} j
+                    cumulés ({globalStats.totalCpTaken} j pris)
                   </p>
                 </div>
               </div>
@@ -1795,39 +2335,58 @@ export default function App() {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
                   <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                    <span>Base Contractuelle</span>
+                    <span>
+                      Base (
+                      {overviewPeriod === 'day'
+                        ? 'Jour'
+                        : overviewPeriod === 'week'
+                        ? 'Semaine'
+                        : overviewPeriod === 'month'
+                        ? 'Mois'
+                        : 'Année'}
+                      )
+                    </span>
                     <Briefcase className="w-4 h-4 text-slate-400" />
                   </div>
                   <div className="text-2xl font-bold text-slate-900">
-                    {formatMinutesToHM(currentWeekStats.targetMinutes, false)}{' '}
-                    <span className="text-sm font-normal text-slate-500">/ semaine</span>
+                    {formatMinutesToHM(periodOverviewStats.targetMinutes, false)}
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
                     Taux <strong>{inspectedUser.workRate || 100}%</strong> •{' '}
-                    {inspectedUser.dailyHours}h/jour (5j) • {currentWeekStats.remoteDaysCount} j TT
+                    {inspectedUser.weeklyHours}h/sem • {periodOverviewStats.remoteDaysCount} j TT
                   </p>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
                   <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                    <span>Comptabilisé (Semaine)</span>
+                    <span>
+                      Comptabilisé (
+                      {overviewPeriod === 'day'
+                        ? 'Jour'
+                        : overviewPeriod === 'week'
+                        ? 'Semaine'
+                        : overviewPeriod === 'month'
+                        ? 'Mois'
+                        : 'Année'}
+                      )
+                    </span>
                     <Clock className="w-4 h-4 text-indigo-500" />
                   </div>
                   <div className="text-2xl font-bold text-slate-900">
-                    {formatMinutesToHM(currentWeekStats.totalAccountedMinutes, false)}
+                    {formatMinutesToHM(periodOverviewStats.totalAccountedMinutes, false)}
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    {formatMinutesToHM(currentWeekStats.workedMinutes, false)} pointées
-                    {currentWeekStats.assimilatedMinutes > 0
-                      ? ` + ${formatMinutesToHM(currentWeekStats.assimilatedMinutes, false)} absences/fériés`
+                    {formatMinutesToHM(periodOverviewStats.workedMinutes, false)} pointées
+                    {periodOverviewStats.assimilatedMinutes > 0
+                      ? ` + ${formatMinutesToHM(periodOverviewStats.assimilatedMinutes, false)} absences/fériés`
                       : ''}
                   </p>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-2xs">
                   <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                    <span>Écart Hebdomadaire</span>
-                    {currentWeekStats.deltaMinutes >= 0 ? (
+                    <span>Écart Période</span>
+                    {periodOverviewStats.deltaMinutes >= 0 ? (
                       <TrendingUp className="w-4 h-4 text-emerald-600" />
                     ) : (
                       <TrendingDown className="w-4 h-4 text-amber-600" />
@@ -1835,19 +2394,19 @@ export default function App() {
                   </div>
                   <div
                     className={`text-2xl font-bold ${
-                      currentWeekStats.deltaMinutes > 0
+                      periodOverviewStats.deltaMinutes > 0
                         ? 'text-emerald-600'
-                        : currentWeekStats.deltaMinutes < 0
+                        : periodOverviewStats.deltaMinutes < 0
                         ? 'text-rose-600'
                         : 'text-slate-700'
                     }`}
                   >
-                    {formatMinutesToHM(currentWeekStats.deltaMinutes, true)}
+                    {formatMinutesToHM(periodOverviewStats.deltaMinutes, true)}
                   </div>
                   <p className="text-xs text-slate-500 mt-1">
-                    {currentWeekStats.deltaMinutes >= 0
-                      ? 'Heures supplémentaires / crédit'
-                      : 'Heures manquantes sur la semaine'}
+                    CP restants : <strong>{globalStats.remainingCp} j</strong> /{' '}
+                    {globalStats.totalCpAvailable} j ({inspectedUser.annualCpQuota} j annuel +{' '}
+                    {inspectedUser.accumulatedCpQuota || 0} j cumulés)
                   </p>
                 </div>
 
@@ -1927,6 +2486,15 @@ export default function App() {
                   />
                   <span>Afficher samedi et dimanche</span>
                 </label>
+
+                <button
+                  type="button"
+                  onClick={handleExportCurrentTimesheetExcel}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                  Export Excel
+                </button>
 
                 {isWeekFullyValidated ? (
                   <div className="flex items-center gap-2">
@@ -2399,6 +2967,15 @@ export default function App() {
                   <option value="RTT">RTT</option>
                   <option value="SICK">Maladie</option>
                 </select>
+
+                <button
+                  type="button"
+                  onClick={handleExportSharedCalendarExcel}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                  Export Excel
+                </button>
               </div>
             </div>
 
@@ -2885,14 +3462,7 @@ export default function App() {
               onSubmit={handleAddTeamMember}
               className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4"
             >
-              <div className="flex items-center gap-2">
-                <UserPlus className="w-5 h-5 text-indigo-600" />
-                <h2 className="text-base font-bold text-slate-900">
-                  Créer un compte collaborateur
-                </h2>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
                 <input
                   type="text"
                   required
@@ -2907,6 +3477,13 @@ export default function App() {
                   value={newMember.email}
                   onChange={(e) => setNewMember({ ...newMember, email: e.target.value })}
                   placeholder="email@entreprise.fr *"
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
+                />
+                <input
+                  type="text"
+                  value={newMember.password}
+                  onChange={(e) => setNewMember({ ...newMember, password: e.target.value })}
+                  placeholder="Mot de passe initial"
                   className="px-3 py-2 rounded-xl border border-slate-200 text-sm"
                 />
 
@@ -3172,6 +3749,14 @@ export default function App() {
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleExportAllHrDataExcel}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-2xs"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Exporter tout en Excel
+                      </button>
                       <select
                         aria-label="Filtrer par équipe"
                         value={departmentFilter}
@@ -3197,44 +3782,66 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Panneau RH de modification manuelle directe des compteurs */}
+                  <div className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-200/80 space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-bold text-indigo-950">
+                      <Sliders className="w-4 h-4 text-indigo-600" />
+                      <span>Ajustement manuel des compteurs (RH uniquement)</span>
+                    </div>
+                    <p className="text-[11px] text-indigo-900/80">
+                      La RH a la main sur tous les compteurs individuels dans le tableau ci-dessous :
+                      <strong> Ajustement heures (en minutes, positif ou négatif)</strong>,{' '}
+                      <strong>RTT annuel & ajustement RTT (jours)</strong>,{' '}
+                      <strong>CP annuel (jours)</strong> et <strong>CP cumulés (jours)</strong>, ainsi
+                      que la réinitialisation du <strong>mot de passe</strong> de chaque collaborateur.
+                    </p>
+                  </div>
+
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-50">
-                          <th className="py-3 px-4">Collaborateur & Email</th>
+                          <th className="py-3 px-4">Collaborateur, Email & Mot de passe</th>
                           <th className="py-3 px-4">Équipe & Manager</th>
                           <th className="py-3 px-4">Entrée / Sortie</th>
                           <th className="py-3 px-4">État du compte</th>
                           <th className="py-3 px-4">Rôle</th>
                           <th className="py-3 px-4">Type de contrat</th>
                           <th className="py-3 px-4">Taux (%) & Heures/sem</th>
-                          <th className="py-3 px-4">Solde init. (min)</th>
-                          <th className="py-3 px-4">RTT / CP (j)</th>
+                          <th className="py-3 px-4">Compteur Heures (min)</th>
+                          <th className="py-3 px-4">Compteurs RTT & CP (j)</th>
                           <th className="py-3 px-4 text-right">Suppression</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-sm">
                         {users
-                          .filter(
-                            (u) =>
-                              (departmentFilter === 'ALL' ||
-                                u.departmentId === departmentFilter) &&
-                              (showInactiveMembers || u.isActive !== false)
-                          )
+                          .filter((u) => {
+                            if (
+                              departmentFilter !== 'ALL' &&
+                              u.departmentId !== departmentFilter
+                            ) {
+                              return false;
+                            }
+                            if (!showInactiveMembers && u.isActive === false) {
+                              return false;
+                            }
+                            return true;
+                          })
                           .map((u) => {
                             const isUserForfait = u.contractType === 'FORFAIT_JOURS';
                             const isSelf = u.id === activeUser.id;
                             const isMemberActive = u.isActive !== false;
-                            const memberDept = departments.find((d) => d.id === u.departmentId);
-                            const deptManager = users.find(
-                              (m) => m.id === memberDept?.managerId
-                            );
+                            const dept = departments.find((d) => d.id === u.departmentId);
+                            const deptManager = users.find((m) => m.id === dept?.managerId);
+
                             return (
                               <tr
                                 key={u.id}
-                                className={`hover:bg-slate-50/70 ${
-                                  !isMemberActive ? 'bg-slate-100/70' : ''
-                                }`}
+                                className={
+                                  isMemberActive
+                                    ? 'hover:bg-slate-50/70'
+                                    : 'bg-slate-100/70 opacity-75'
+                                }
                               >
                                 <td className="py-3.5 px-4">
                                   <div className="flex items-center gap-3">
@@ -3250,7 +3857,7 @@ export default function App() {
                                         onChange={(e) =>
                                           handleUpdateUserContract(u.id, 'name', e.target.value)
                                         }
-                                        className="block font-bold text-slate-900 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none text-sm"
+                                        className="font-bold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-slate-900 focus:outline-none text-sm block"
                                       />
                                       <input
                                         type="email"
@@ -3258,8 +3865,24 @@ export default function App() {
                                         onChange={(e) =>
                                           handleUpdateUserContract(u.id, 'email', e.target.value)
                                         }
-                                        className="block text-xs text-slate-500 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
+                                        className="text-xs text-slate-500 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-slate-900 focus:outline-none block"
                                       />
+                                      <div className="flex items-center gap-1 pt-0.5">
+                                        <KeyRound className="w-3 h-3 text-slate-400" />
+                                        <input
+                                          type="text"
+                                          value={u.password || ''}
+                                          onChange={(e) =>
+                                            handleUpdateUserContract(
+                                              u.id,
+                                              'password',
+                                              e.target.value
+                                            )
+                                          }
+                                          placeholder="Définir mot de passe"
+                                          className="text-[11px] text-slate-600 bg-slate-50 px-2 py-0.5 rounded border border-slate-200 w-36"
+                                        />
+                                      </div>
                                     </div>
                                   </div>
                                 </td>
@@ -3464,46 +4087,83 @@ export default function App() {
                                   {isUserForfait ? (
                                     <span className="text-xs text-slate-400 italic">—</span>
                                   ) : (
-                                    <input
-                                      type="number"
-                                      step="15"
-                                      value={u.initialBalanceMinutes}
-                                      onChange={(e) =>
-                                        handleUpdateUserContract(
-                                          u.id,
-                                          'initialBalanceMinutes',
-                                          e.target.value
-                                        )
-                                      }
-                                      className="w-20 px-2 py-1 rounded-lg border border-slate-200 text-xs"
-                                    />
+                                    <div className="space-y-1">
+                                      <input
+                                        type="number"
+                                        step="15"
+                                        aria-label="Ajustement compteur heures en minutes"
+                                        value={u.initialBalanceMinutes}
+                                        onChange={(e) =>
+                                          handleUpdateUserContract(
+                                            u.id,
+                                            'initialBalanceMinutes',
+                                            e.target.value
+                                          )
+                                        }
+                                        className="w-24 px-2 py-1 rounded-lg border border-slate-200 text-xs font-semibold"
+                                      />
+                                      <div className="text-[11px] font-semibold text-slate-500">
+                                        Soit {formatMinutesToHM(u.initialBalanceMinutes, true)}
+                                      </div>
+                                    </div>
                                   )}
                                 </td>
 
-                                <td className="py-3.5 px-4 space-y-1">
-                                  <div className="flex items-center gap-1 text-xs">
-                                    <span className="w-8 text-slate-500">RTT:</span>
+                                <td className="py-3.5 px-4 space-y-1.5">
+                                  {isUserForfait && (
+                                    <>
+                                      <div className="flex items-center gap-1.5 text-xs">
+                                        <span className="w-24 text-indigo-700 font-semibold">
+                                          RTT annuel :
+                                        </span>
+                                        <input
+                                          type="number"
+                                          step="0.5"
+                                          min="0"
+                                          aria-label="RTT annuel disponible"
+                                          value={u.annualRttQuota}
+                                          onChange={(e) =>
+                                            handleUpdateUserContract(
+                                              u.id,
+                                              'annualRttQuota',
+                                              e.target.value
+                                            )
+                                          }
+                                          className="w-16 px-2 py-1 rounded-lg border border-indigo-200 bg-indigo-50/40 text-xs font-semibold"
+                                        />
+                                        <span className="text-[11px] text-slate-500">j</span>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 text-xs">
+                                        <span className="w-24 text-indigo-600 font-medium">
+                                          Ajust. RTT :
+                                        </span>
+                                        <input
+                                          type="number"
+                                          step="0.5"
+                                          aria-label="Ajustement manuel RTT"
+                                          value={u.manualRttAdjustment ?? 0}
+                                          onChange={(e) =>
+                                            handleUpdateUserContract(
+                                              u.id,
+                                              'manualRttAdjustment',
+                                              e.target.value
+                                            )
+                                          }
+                                          className="w-16 px-2 py-1 rounded-lg border border-indigo-200 text-xs font-semibold"
+                                        />
+                                        <span className="text-[11px] text-slate-500">j</span>
+                                      </div>
+                                    </>
+                                  )}
+                                  <div className="flex items-center gap-1.5 text-xs">
+                                    <span className="w-24 text-slate-600 font-medium">
+                                      CP annuel :
+                                    </span>
                                     <input
                                       type="number"
                                       step="0.5"
                                       min="0"
-                                      value={u.annualRttQuota}
-                                      onChange={(e) =>
-                                        handleUpdateUserContract(
-                                          u.id,
-                                          'annualRttQuota',
-                                          e.target.value
-                                        )
-                                      }
-                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs"
-                                    />
-                                  </div>
-                                  <div className="flex items-center gap-1 text-xs">
-                                    <span className="w-8 text-slate-500">CP:</span>
-                                    <input
-                                      type="number"
-                                      step="0.5"
-                                      min="0"
+                                      aria-label="CP annuel"
                                       value={u.annualCpQuota}
                                       onChange={(e) =>
                                         handleUpdateUserContract(
@@ -3512,8 +4172,30 @@ export default function App() {
                                           e.target.value
                                         )
                                       }
-                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs"
+                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs font-semibold"
                                     />
+                                    <span className="text-[11px] text-slate-500">j</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-xs">
+                                    <span className="w-24 text-emerald-700 font-medium">
+                                      CP cumulés :
+                                    </span>
+                                    <input
+                                      type="number"
+                                      step="0.5"
+                                      min="0"
+                                      aria-label="CP cumulés"
+                                      value={u.accumulatedCpQuota ?? 0}
+                                      onChange={(e) =>
+                                        handleUpdateUserContract(
+                                          u.id,
+                                          'accumulatedCpQuota',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="w-16 px-2 py-1 rounded-lg border border-emerald-200 bg-emerald-50/40 text-xs font-semibold"
+                                    />
+                                    <span className="text-[11px] text-slate-500">j</span>
                                   </div>
                                 </td>
 
