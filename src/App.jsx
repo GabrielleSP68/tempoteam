@@ -1974,29 +1974,6 @@ export default function App() {
                 </span>
               </div>
 
-              {isHR && (
-                <select
-                  aria-label="Basculer vers un profil (RH uniquement)"
-                  value={activeUser.id}
-                  onChange={(e) => {
-                    setCurrentUserId(e.target.value);
-                    setSelectedTimesheetUserId(e.target.value);
-                  }}
-                  className="bg-indigo-50 text-xs font-bold text-indigo-950 rounded-xl px-3 py-2 border border-indigo-200 cursor-pointer"
-                >
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      Vue compte : {u.name} {u.isActive === false ? '(Désactivé)' : ''} —{' '}
-                      {u.role === 'hr'
-                        ? 'RH'
-                        : u.role === 'manager'
-                        ? 'Manager'
-                        : 'Collaborateur'}
-                    </option>
-                  ))}
-                </select>
-              )}
-
               <button
                 type="button"
                 onClick={handleLogout}
