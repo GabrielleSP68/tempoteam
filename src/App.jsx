@@ -44,7 +44,6 @@ const AVATAR_COLORS = [
   'bg-violet-600',
 ];
 
-// --- MÉTADONNÉES DES STATUTS DE JOURNÉE ---
 const DAY_STATUSES = {
   WORKED: {
     label: 'Travaillé (Présentiel)',
@@ -88,7 +87,6 @@ const DAY_STATUSES = {
   },
 };
 
-// --- UTILITAIRES DE DATES & CALCULS ---
 function formatDateISO(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -97,7 +95,7 @@ function formatDateISO(date) {
 }
 
 function parseDateISO(isoStr) {
-  const [y, m, d] = String(isoStr).split('-').map(Number);
+  const [y, m, d] = String(isoStr || '').split('-').map(Number);
   return new Date(y || 2026, (m || 1) - 1, d || 1);
 }
 
@@ -146,7 +144,16 @@ function formatMinutesToHM(totalMinutes, withSign = false) {
   return `${sign}${hours}h${String(mins).padStart(2, '0')}`;
 }
 
-// Calcul de Pâques (algorithme de Butcher / grégorien)
+function buildInitials(fullName) {
+  const parts = String(fullName || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length === 0) return 'US';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
 function getEasterSundayDate(year) {
   const a = year % 19;
   const b = Math.floor(year / 100);
@@ -171,7 +178,6 @@ function getFrenchPublicHolidaysForYear(year, includeAlsaceMoselle = false) {
     map[formatDateISO(dateObj)] = label;
   };
 
-  // Jours fériés fixes nationaux
   addHoliday(new Date(year, 0, 1), 'Jour de l’an');
   addHoliday(new Date(year, 4, 1), 'Fête du Travail');
   addHoliday(new Date(year, 4, 8), 'Victoire 1945');
@@ -181,13 +187,11 @@ function getFrenchPublicHolidaysForYear(year, includeAlsaceMoselle = false) {
   addHoliday(new Date(year, 10, 11), 'Armistice 1918');
   addHoliday(new Date(year, 11, 25), 'Noël');
 
-  // Jours fériés mobiles liés à Pâques
   const easterSunday = getEasterSundayDate(year);
   addHoliday(addDays(easterSunday, 1), 'Lundi de Pâques');
   addHoliday(addDays(easterSunday, 39), 'Ascension');
   addHoliday(addDays(easterSunday, 50), 'Lundi de Pentecôte');
 
-  // Régime local Alsace-Moselle
   if (includeAlsaceMoselle) {
     addHoliday(addDays(easterSunday, -2), 'Vendredi Saint (Alsace-Moselle)');
     addHoliday(new Date(year, 11, 26), 'Saint-Étienne (Alsace-Moselle)');
@@ -196,7 +200,6 @@ function getFrenchPublicHolidaysForYear(year, includeAlsaceMoselle = false) {
   return map;
 }
 
-// --- COMPOSANT PRINCIPAL ---
 export default function App() {
   const [departments, setDepartments] = useState(() => {
     try {
@@ -260,15 +263,16 @@ export default function App() {
     }
   });
 
-  // Formulaire de création / connexion rapide par adresse email
+  // Écran d'accès / création initial
   const [quickEmail, setQuickEmail] = useState('');
   const [quickName, setQuickName] = useState('');
-  const [quickRole, setQuickRole] = useState('collaborator');
-  const [quickContractType, setQuickContractType] = useState('HOURLY');
+  const [quickRole, setQuickRole] = useState('manager');
+  const [quickContractType, setQuickContractType] = useState('FORFAIT_JOURS');
   const [quickWeeklyHours, setQuickWeeklyHours] = useState(35);
   const [formError, setFormError] = useState('');
-  const [accountActionMode, setAccountActionMode] = useState('CREATE'); // 'CREATE' (uniquement si aucun compte) ou 'OPEN_EXISTING'
-  // Formulaire ajout collaborateur dans l'espace Manager / RH
+  const [accountActionMode, setAccountActionMode] = useState('OPEN_EXISTING');
+
+  // Formulaire ajout collaborateur
   const [newMember, setNewMember] = useState({
     name: '',
     email: '',
@@ -284,17 +288,19 @@ export default function App() {
     isActive: true,
   });
 
-  // Formulaire création d'un service avec manager rattaché (RH / Manager)
+  // Formulaire création service
   const [newDepartment, setNewDepartment] = useState({
     name: '',
     managerId: '',
   });
 
-  // Profil consulté par le manager ou la RH
+  // Navigation & Filtres
   const [selectedTimesheetUserId, setSelectedTimesheetUserId] = useState(null);
   const [requestStatusFilter, setRequestStatusFilter] = useState('ALL');
   const [showInactiveMembers, setShowInactiveMembers] = useState(true);
   const [departmentFilter, setDepartmentFilter] = useState('ALL');
+  const [activeTab, setActiveTab] = useState('timesheet');
+  const [currentWeekStart, setCurrentWeekStart] = useState(() => getMondayOfWeek(new Date()));
   const [includeWeekend, setIncludeWeekend] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -303,7 +309,6 @@ export default function App() {
   const [calendarStatusFilter, setCalendarStatusFilter] = useState('ALL');
   const [calendarUserFilter, setCalendarUserFilter] = useState('ALL');
 
-  // Toast de notification interne
   const [notification, setNotification] = useState(null);
 
   const showToast = useCallback((message, type = 'success') => {
@@ -311,7 +316,6 @@ export default function App() {
     setTimeout(() => setNotification(null), 3500);
   }, []);
 
-  // Persistance automatique dans localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.DEPARTMENTS, JSON.stringify(departments));
@@ -374,7 +378,6 @@ export default function App() {
   const isHR = normalizedRole === 'hr' || normalizedRole === 'rh';
   const canManageTeam = isManager || isHR;
 
-  // Périmètre visible : la RH voit tout le monde ; le manager voit son périmètre / équipe
   const visibleUsers = useMemo(() => {
     if (!activeUser) return [];
     if (isHR) return users;
@@ -409,6 +412,27 @@ export default function App() {
       activeUser
     );
   }, [canManageTeam, activeUser, visibleUsers, users, selectedTimesheetUserId]);
+
+  const isForfaitJours = inspectedUser?.contractType === 'FORFAIT_JOURS';
+  const canBootstrapInitialProfile = users.length === 0;
+
+  const handleCreateOrSwitchByEmail = (e) => {
+    e.preventDefault();
+    setFormError('');
+    const normalizedEmail = quickEmail.trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setFormError('Veuillez saisir une adresse email valide.');
+      return;
+    }
+
+    const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
+    if (existing) {
+      if (existing.isActive === false) {
+        setFormError(
+          'Ce compte est désactivé (date de sortie renseignée ou compte inactif). Contactez votre Manager ou la RH.'
+        );
+        return;
+      }
       setCurrentUserId(existing.id);
       setSelectedTimesheetUserId(existing.id);
       setQuickEmail('');
@@ -417,10 +441,9 @@ export default function App() {
       return;
     }
 
-    // Si des comptes existent déjà, seul un Manager ou RH peut créer de nouveaux collaborateurs
-    if (users.length > 0 && accountActionMode === 'CREATE') {
+    if (users.length > 0 && accountActionMode === 'OPEN_EXISTING') {
       setFormError(
-        'Des comptes existent déjà : saisissez une adresse existante pour ouvrir votre session, ou demandez au Manager / à la RH de créer votre profil.'
+        'Aucun compte trouvé avec cet email. Choisissez "Créer mon profil collaborateur" ou demandez au Manager / à la RH.'
       );
       return;
     }
@@ -455,6 +478,63 @@ export default function App() {
       entryDate: formatDateISO(new Date()),
       exitDate: '',
       isActive: true,
+    };
+
+    setUsers((prev) => [...prev, newProfile]);
+    setCurrentUserId(newProfile.id);
+    setSelectedTimesheetUserId(newProfile.id);
+    setQuickEmail('');
+    setQuickName('');
+    showToast(`Profil créé pour ${newProfile.name}.`);
+  };
+
+  const handleUpdateOwnProfile = (field, value) => {
+    if (!activeUser) return;
+    setUsers((prev) =>
+      prev.map((u) => {
+        if (u.id !== activeUser.id) return u;
+        if (field === 'name') {
+          return { ...u, name: value, avatar: buildInitials(value) };
+        }
+        if (field === 'email') {
+          return { ...u, email: value.trim().toLowerCase() };
+        }
+        if (field === 'jobTitle') {
+          return { ...u, jobTitle: value };
+        }
+        return u;
+      })
+    );
+  };
+
+  const handleDeleteUser = (targetUserId) => {
+    if (!canManageTeam) {
+      showToast('Seuls le Manager et la RH peuvent supprimer un collaborateur.', 'error');
+      return;
+    }
+    if (targetUserId === activeUser?.id) {
+      showToast('Vous ne pouvez pas supprimer votre propre session active.', 'error');
+      return;
+    }
+    const target = users.find((u) => u.id === targetUserId);
+    setUsers((prev) => prev.filter((u) => u.id !== targetUserId));
+    setDepartments((prev) =>
+      prev.map((d) => (d.managerId === targetUserId ? { ...d, managerId: '' } : d))
+    );
+    setLeaveRequests((prev) => prev.filter((r) => r.userId !== targetUserId));
+    setTimeLogs((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((k) => {
+        if (k.startsWith(`${targetUserId}_`)) delete next[k];
+      });
+      return next;
+    });
+    if (selectedTimesheetUserId === targetUserId) {
+      setSelectedTimesheetUserId(activeUser.id);
+    }
+    showToast(`Profil ${target?.name || ''} supprimé.`);
+  };
+
   const handleCreateDepartment = (e) => {
     e.preventDefault();
     if (!canManageTeam) {
@@ -479,7 +559,6 @@ export default function App() {
 
     setDepartments((prev) => [...prev, createdDept]);
 
-    // Si un manager est rattaché et n'avait pas encore de service, on lui associe ce service
     if (defaultManagerId) {
       setUsers((prev) =>
         prev.map((u) =>
@@ -570,7 +649,6 @@ export default function App() {
     setCurrentUserId(null);
   };
 
-  // Jours fériés français selon l'année et l'option Alsace-Moselle
   const getHolidayName = useCallback(
     (isoDate) => {
       if (!isoDate) return null;
@@ -662,7 +740,6 @@ export default function App() {
     [timeLogs, getHolidayName]
   );
 
-  // Statistiques de la semaine
   const currentWeekStats = useMemo(() => {
     if (!inspectedUser) {
       return {
@@ -749,7 +826,6 @@ export default function App() {
     };
   }, [inspectedUser, currentWeekStart, getDayEntry]);
 
-  // Compteur cumulé global
   const globalStats = useMemo(() => {
     if (!inspectedUser) {
       return {
@@ -1122,6 +1198,14 @@ export default function App() {
     if (calendarUserFilter === 'ALL') return baseList;
     return baseList.filter((u) => u.id === calendarUserFilter);
   }, [users, departmentFilter, calendarUserFilter, calendarStatusFilter]);
+
+  const pendingRequestsCount = useMemo(
+    () => leaveRequests.filter((r) => r.status === 'PENDING').length,
+    [leaveRequests]
+  );
+
+  if (!activeUser) {
+    return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-lg bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
           <div className="flex flex-col items-center text-center space-y-2">
@@ -1131,7 +1215,7 @@ export default function App() {
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">TempoTeam</h1>
             <p className="text-xs text-slate-500">
               {canBootstrapInitialProfile
-                ? 'Créez le premier profil (Manager ou RH) pour démarrer la gestion de l’équipe.'
+                ? 'Créez votre premier profil (Manager ou RH) pour démarrer la gestion de l’équipe.'
                 : 'Saisissez votre adresse email enregistrée pour accéder à votre espace.'}
             </p>
           </div>
@@ -1236,8 +1320,8 @@ export default function App() {
                       onChange={(e) => setQuickContractType(e.target.value)}
                       className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-white"
                     >
-                      <option value="HOURLY">Taux horaire</option>
                       <option value="FORFAIT_JOURS">Cadre Forfait Jours</option>
+                      <option value="HOURLY">Taux horaire</option>
                     </select>
                   </div>
 
@@ -1359,20 +1443,6 @@ export default function App() {
                 </select>
               </div>
 
-              <select
-                aria-label="Profil actif"
-                value={activeUser.id}
-                onChange={(e) => {
-                  setCurrentUserId(e.target.value);
-                  setSelectedTimesheetUserId(e.target.value);
-                }}
-                className="bg-slate-100 text-xs font-bold text-slate-900 rounded-xl px-3 py-2 border border-slate-200 cursor-pointer"
-              >
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} ({u.email}) —{' '}
-                    {u.role === 'manager'
-                      ? 'Manager'
               <div className="px-3 py-1.5 rounded-xl bg-slate-100 text-xs font-bold text-slate-900 border border-slate-200">
                 <span>{activeUser.name}</span>
                 <span className="text-slate-500 font-medium ml-1.5">
@@ -2450,7 +2520,6 @@ export default function App() {
 
         {activeTab === 'team_settings' && canManageTeam && (
           <div className="space-y-6">
-            {/* Création & gestion des services avec manager rattaché (RH & Manager) */}
             <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-2xs space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
